@@ -20,6 +20,9 @@
 #define DAT_LEN 20
 #define MARK_STK (0x100 + 0xFE)
 #define MARK_DAT (0x100 + 0xFD)
+#define WRN_COL 0
+#define WRN_LEN 17
+#define MARK_WRN (0x100 + 0xFC)
 
 // Mega Drive palette (9-bit levels 0,52,87,116,144,172,206,255)
 #define C_BLUE lv_color_hex(0x3457FF)
@@ -57,7 +60,8 @@ typedef struct {
     lv_obj_t *tim, *mode, *thr_box, *thr_fill, *thr_pct, *rpm;
     lv_obj_t *gim[2], *gdot[2], *gcore[2];
     lv_obj_t *card, *c_title, *c_heart, *c_yt, *c_gh, *c_float[NFLOAT];
-    int thr_h, gim_in, card_y, heart_x, heart_y;
+    lv_obj_t *wrn, *wrn_txt, *edge[2];
+    int thr_h, gim_in, card_y, heart_x, heart_y, wrn_y;
     float s;
 } hud_t;
 
@@ -69,6 +73,8 @@ static void tick(lv_timer_t *tm);
 static struct {
     int stk[4];
     int cv, da, mah, lq, thr, rpm200, g10, tenths, flags;
+    int wsev;
+    char wtxt[16];
 } D = {{100, 0, 100, 100}};
 static volatile uint32_t seen_ms;
 
@@ -209,6 +215,30 @@ void fr0g_hud_create(uint8_t fhd, lv_obj_t *parent) {
         u->gdot[k] = dot;
     }
 
+    // ---- warning banner: top centre of the picture; edge glows down the inside of both bars for critical
+    for (int k = 0; k < 2; k++) {
+        lv_obj_t *e = box(u->root);
+        lv_obj_set_size(e, S(5), SH);
+        lv_obj_set_pos(e, k == 0 ? BAR : SW - BAR - S(5), 0);
+        lv_obj_set_style_bg_color(e, C_RED, 0);
+        lv_obj_set_style_bg_opa(e, LV_OPA_COVER, 0);
+        lv_obj_set_style_shadow_color(e, C_RED, 0);
+        lv_obj_set_style_shadow_width(e, S(30), 0);
+        lv_obj_set_style_shadow_spread(e, S(4), 0);
+        lv_obj_add_flag(e, LV_OBJ_FLAG_HIDDEN);
+        u->edge[k] = e;
+    }
+    u->wrn = box(u->root);
+    lv_obj_set_height(u->wrn, S(46));
+    lv_obj_set_style_radius(u->wrn, S(23), 0);
+    lv_obj_set_style_bg_opa(u->wrn, 190, 0);
+    lv_obj_set_style_border_width(u->wrn, S(3), 0);
+    lv_obj_set_style_pad_hor(u->wrn, S(26), 0);
+    u->wrn_y = S(22);
+    u->wrn_txt = text(u->wrn, f_pct, C_WHT);
+    lv_obj_center(u->wrn_txt);
+    lv_obj_add_flag(u->wrn, LV_OBJ_FLAG_HIDDEN);
+
     // ---- like & subscribe pill, centred low over the picture (hidden until 5 s after the first arm)
     const int cw = S(340), chh = S(96);
     u->card = box(u->root);
@@ -346,6 +376,64 @@ static void card_tick(hud_t *u, uint32_t ms, int64_t t_ms) {
     (void)ms;
 }
 
+// ---------------- warnings ----------------
+static void wrn_tick(hud_t *u, uint32_t ms) {
+    static char shown[16] = "";
+    static uint32_t changed = 0, gone = 0;
+    const bool has = D.wtxt[0] != '\0';
+    if (has && strcmp(shown, D.wtxt) != 0) {
+        strcpy(shown, D.wtxt);
+        changed = ms;
+    }
+    if (has)
+        gone = 0;
+    else if (!gone)
+        gone = ms;
+    const float s = u->s;
+    float a;
+    if (has) {
+        a = clampf((ms - changed) / 150.0f);
+    } else {
+        a = 1 - clampf((ms - gone) / 250.0f);
+    }
+    const bool crit = D.wsev >= 3, warn = D.wsev == 2;
+    for (int k = 0; k < 2; k++) {
+        if (crit && has) {
+            lv_obj_clear_flag(u->edge[k], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_style_opa(u->edge[k], (lv_opa_t)(120 + 120 * (0.5f + 0.5f * sinf(ms * 0.012f))), 0);
+        } else {
+            lv_obj_add_flag(u->edge[k], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    if (a <= 0.01f || !shown[0]) {
+        lv_obj_add_flag(u->wrn, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_obj_clear_flag(u->wrn, LV_OBJ_FLAG_HIDDEN);
+    if (strcmp(lv_label_get_text(u->wrn_txt), shown) != 0) {
+        lv_label_set_text(u->wrn_txt, shown);
+        lv_obj_set_width(u->wrn, LV_SIZE_CONTENT);
+    }
+    lv_obj_align(u->wrn, LV_ALIGN_TOP_MID, 0, u->wrn_y - (int)((1 - a) * 14 * s));
+    if (crit) {
+        lv_obj_set_style_bg_color(u->wrn, C_RED, 0);
+        lv_obj_set_style_bg_opa(u->wrn, (lv_opa_t)(170 + 70 * (0.5f + 0.5f * sinf(ms * 0.012f))), 0);
+        lv_obj_set_style_border_color(u->wrn, C_WHT, 0);
+        lv_obj_set_style_text_color(u->wrn_txt, C_WHT, 0);
+    } else if (warn) {
+        lv_obj_set_style_bg_color(u->wrn, C_NAVY, 0);
+        lv_obj_set_style_bg_opa(u->wrn, 190, 0);
+        lv_obj_set_style_border_color(u->wrn, C_GOLD, 0);
+        lv_obj_set_style_text_color(u->wrn_txt, C_GOLD, 0);
+    } else {
+        lv_obj_set_style_bg_color(u->wrn, C_NAVY, 0);
+        lv_obj_set_style_bg_opa(u->wrn, 170, 0);
+        lv_obj_set_style_border_color(u->wrn, C_SKY, 0);
+        lv_obj_set_style_text_color(u->wrn_txt, C_WHT, 0);
+    }
+    lv_obj_set_style_opa(u->wrn, (lv_opa_t)(255 * a), 0);
+}
+
 static void tick(lv_timer_t *tm) {
     (void)tm;
     const uint32_t ms = now_ms();
@@ -412,6 +500,7 @@ static void tick(lv_timer_t *tm) {
             lv_obj_set_pos(u->gdot[k], pad + (int)(hx * u->gim_in) - d / 2, pad + (int)((1 - hy) * u->gim_in) - d / 2);
         }
         card_tick(u, ms, card_t);
+        wrn_tick(u, ms);
     }
 }
 
@@ -429,6 +518,25 @@ uint16_t fr0g_hud_filter(int row, int col, uint16_t ch, const uint16_t *rb) {
         if (col == STK_COL)
             for (int i = 0; i < 4; i++)
                 D.stk[i] = dec(rb[STK_COL + 1 + i]);
+        return 0x20;
+    }
+    if (col >= WRN_COL && col < WRN_COL + WRN_LEN && rb[WRN_COL] == MARK_WRN) {
+        if (col == WRN_COL) {
+            D.wsev = dec(rb[WRN_COL + 1]);
+            char t[16];
+            int n = 0;
+            for (int i = 0; i < 15; i++) {
+                const int c = rb[WRN_COL + 2 + i] & 0xFF;
+                t[n++] = (c >= 0x20 && c < 0x7F) ? (char)c : ' ';
+            }
+            while (n > 0 && t[n - 1] == ' ')
+                n--;
+            int b0 = 0;
+            while (b0 < n && t[b0] == ' ')
+                b0++;
+            t[n] = '\0';
+            memcpy(D.wtxt, t + b0, (size_t)(n - b0 + 1));
+        }
         return 0x20;
     }
     if (col >= DAT_COL && col < DAT_COL + DAT_LEN && rb[DAT_COL] == MARK_DAT) {
