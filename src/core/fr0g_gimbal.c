@@ -1,4 +1,5 @@
 #include "fr0g_gimbal.h"
+#include "fr0g_race.h"
 
 #include <string.h>
 #include <sys/time.h>
@@ -25,6 +26,7 @@ typedef struct {
 } gimbal_obj_t;
 
 static gimbal_obj_t g_obj[2][2];       // [fhd][stick]
+static int g_x_normal[2][2], g_x_race[2][2], g_y[2];
 static int g_inner_w[2], g_inner_h[2]; // travel area in px, per screen
 static bool g_created[2];
 static lv_timer_t *g_timer;
@@ -94,6 +96,13 @@ static void tick(lv_timer_t *t) {
     }
     if (!live)
         return;
+    const bool race = fr0g_race_live();
+    for (uint8_t f = 0; f < 2; f++) {
+        if (!g_created[f])
+            continue;
+        for (int k = 0; k < 2; k++)
+            lv_obj_set_pos(g_obj[f][k].box, race ? g_x_race[f][k] : g_x_normal[f][k], g_y[f]);
+    }
 
     // glide toward the latest stick values (the FC sends ~20 a second, this runs ~60)
     float moved = 0;
@@ -141,6 +150,10 @@ void fr0g_gimbal_create(uint8_t fhd, lv_obj_t *parent, int offset_x, int offset_
         g->box = mk(parent);
         lv_obj_set_size(g->box, bw, bh);
         lv_obj_set_pos(g->box, x0 + k * (bw + gap), y);
+        g_x_normal[fhd][k] = x0 + k * (bw + gap);
+        // race HUD: either side of the tacho, between it and the side panels
+        g_x_race[fhd][k] = k == 0 ? scr_w / 2 - (int)(200 * s) - bw : scr_w / 2 + (int)(200 * s);
+        g_y[fhd] = y;
         lv_obj_set_style_radius(g->box, (int)(14 * s), 0);
         lv_obj_set_style_bg_color(g->box, COL_PANEL, 0);
         lv_obj_set_style_bg_opa(g->box, 70, 0);

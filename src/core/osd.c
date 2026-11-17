@@ -22,6 +22,7 @@
 #include "core/dvr.h"
 #include "core/elrs.h"
 #include "core/fr0g_gimbal.h"
+#include "core/fr0g_race.h"
 #include "core/msp_displayport.h"
 #include "core/settings.h"
 #include "driver/dm5680.h"
@@ -959,6 +960,7 @@ static void fc_osd_init(uint8_t fhd, uint16_t OFFSET_X, uint16_t OFFSET_Y) {
     }
 #endif
     pthread_mutex_lock(&lvgl_mutex);
+    fr0g_race_create(fhd, scr_osd[fhd]);                        // fr0gOS: race telemetry HUD (when the FC sends it)
     fr0g_gimbal_create(fhd, scr_osd[fhd], OFFSET_X, OFFSET_Y);   // fr0gOS: goggle-drawn stick gimbals
     pthread_mutex_unlock(&lvgl_mutex);
 }
@@ -1200,7 +1202,7 @@ void *thread_osd(void *ptr) {
         // display osd
         for (int i = 0; i < HD_VMAX; i++) {
             for (int j = 0; j < HD_HMAX; j++) {
-                uint16_t ch = fr0g_gimbal_filter(i, j, fc_osd[i][j], fc_osd[i]);
+                uint16_t ch = fr0g_race_filter(i, j, fr0g_gimbal_filter(i, j, fc_osd[i][j], fc_osd[i]), fc_osd[i]);
                 if (ch == 0x20)
                     ch = elrs_osd[i][j];
                 if (ch != osd_buf_shadow[i][j]) {
