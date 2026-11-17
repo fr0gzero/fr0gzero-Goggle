@@ -1,6 +1,6 @@
 name: Build BoxPro Firmware
 
-on: [push, pull_request]
+on: [pull_request]   # fr0gOS: only the Goggle 2 build runs on push
 
 jobs:
   build:

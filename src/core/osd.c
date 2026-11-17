@@ -21,6 +21,7 @@
 #include "core/common.hh"
 #include "core/dvr.h"
 #include "core/elrs.h"
+#include "core/fr0g_hud.h"
 #include "core/msp_displayport.h"
 #include "core/settings.h"
 #include "driver/dm5680.h"
@@ -957,6 +958,9 @@ static void fc_osd_init(uint8_t fhd, uint16_t OFFSET_X, uint16_t OFFSET_Y) {
         osd_analog_rssi_create();
     }
 #endif
+    pthread_mutex_lock(&lvgl_mutex);
+    fr0g_hud_create(fhd, scr_osd[fhd]);   // fr0gOS: goggle-drawn HUD in the black bars + like & subscribe card
+    pthread_mutex_unlock(&lvgl_mutex);
 }
 
 static void create_osd_scr(void) {
@@ -1196,7 +1200,7 @@ void *thread_osd(void *ptr) {
         // display osd
         for (int i = 0; i < HD_VMAX; i++) {
             for (int j = 0; j < HD_HMAX; j++) {
-                uint16_t ch = fc_osd[i][j];
+                uint16_t ch = fr0g_hud_filter(i, j, fc_osd[i][j], fc_osd[i]);
                 if (ch == 0x20)
                     ch = elrs_osd[i][j];
                 if (ch != osd_buf_shadow[i][j]) {

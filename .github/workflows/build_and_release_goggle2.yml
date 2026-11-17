@@ -4,7 +4,9 @@ on: [push, pull_request]
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
@@ -31,6 +33,20 @@ jobs:
         with:
           name: HDZGOGGLE
           path: build_goggle2/out/HDZGOGGLE
+
+      - name: Publish to fr0g-builds (fr0gOS)
+        if: github.event_name == 'push'
+        run: |
+          mkdir -p pub && cp build_goggle2/out/HDZGOGGLE pub/ && cp misc/fr0g/develop.sh pub/
+          cp build_goggle2/out/*.bin pub/ 2>/dev/null || true
+          cd pub
+          git init -q -b fr0g-builds
+          git config user.name "fr0g-builds"
+          git config user.email "builds@users.noreply.github.com"
+          echo "${GITHUB_SHA}" > SOURCE_COMMIT
+          git add -A
+          git commit -qm "goggle2 build of ${GITHUB_REF_NAME} @ ${GITHUB_SHA::7}"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${GITHUB_REPOSITORY}.git" fr0g-builds
 
       - name: Create Release
         uses: softprops/action-gh-release@v0.1.15
