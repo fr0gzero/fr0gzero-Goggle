@@ -314,19 +314,23 @@ void fr0g_hud_create(uint8_t fhd, lv_obj_t *parent) {
     lv_obj_t *R = fill(u->root, SW - BAR, 0, BAR, SH, C_BLK, 0);
     u->tim = text(R, f_tim, C_WHT, "");
     at(u->tim, BAR / 2, S(40), 2);
+    // the goggle's burn-in orbit shifts the frame up to 8 px and wraps the right-most columns onto the left edge,
+    // so nothing coloured may touch the last 8 px: the flush-right LCARS pieces live in a container that stops short
+    lv_obj_t *Ri = box(R);
+    lv_obj_set_size(Ri, BAR - S(8), SH);
     const int sy = S(54);
     for (int k = 0; k < 3; k++) {
         // pills with a rounded left end that run off the screen edge (clipped flat by the bar)
-        u->blk[k] = fill(R, S(8), sy + k * S(28), BAR, S(22), DIM(C_FRAME2, 60), LV_RADIUS_CIRCLE);
+        u->blk[k] = fill(Ri, S(8), sy + k * S(28), BAR, S(22), DIM(C_FRAME2, 60), LV_RADIUS_CIRCLE);
         u->blk_txt[k] = text(u->blk[k], f_blk, C_BLK, "");
-        lv_obj_align(u->blk_txt[k], LV_ALIGN_RIGHT_MID, -S(22), 0);   // block runs 8 px past the bar; text ends 14 px in
+        lv_obj_align(u->blk_txt[k], LV_ALIGN_RIGHT_MID, -S(26), 0);   // block runs 16 px past the container; text ends 10 px in
     }
     // LCARS elbow: header arm, then the vertical arm is the RPM gauge, throttle bar beside it
     const int ey = sy + 3 * S(28) + S(8), armw = S(30), armh = S(14), Rr = S(22), ybot = SH - S(236);
-    lv_obj_t *elb = fill(R, S(8), ey, BAR + S(60), ybot + S(60) - ey, C_FRAME2, Rr);
-    fill(R, S(8) + armw, ey + armh, BAR + S(60), ybot + S(120) - ey, C_BLK, Rr / 2);
+    lv_obj_t *elb = fill(Ri, S(8), ey, BAR + S(60), ybot + S(60) - ey, C_FRAME2, Rr);
+    fill(Ri, S(8) + armw, ey + armh, BAR + S(60), ybot + S(120) - ey, C_BLK, Rr / 2);
     lv_obj_t *el = text(elb, f_lab, C_BLK, "THROTTLE / RPM");
-    lv_obj_align(el, LV_ALIGN_TOP_RIGHT, -(S(60) + S(20)), (armh - lv_font_get_line_height(f_lab)) / 2 + 1);
+    lv_obj_align(el, LV_ALIGN_TOP_RIGHT, -(S(60) + S(26)), (armh - lv_font_get_line_height(f_lab)) / 2 + 1);
     const int ry0 = ey + armh + Rr;
     fill(R, S(8), ry0, armw, SH - ry0, C_BLK, 0);
     u->bar_h = ybot - (ry0 + S(4));
@@ -510,6 +514,7 @@ static void graph_draw(hud_t *u) {
 // ---------------- combat log ----------------
 #define CPU_HOT_C 78   // Betaflight warns at 70 C; only bother Tom from 78 C
 static int core_temp(const char *raw);
+static bool wrn_ignored(const char *raw);
 static void wrn_map(const char *raw, char *title, size_t tn, char *hint, size_t hn);
 typedef struct {
     char e[16], v[12];
@@ -573,7 +578,7 @@ static void log_events(uint32_t ms) {
         }
     }
     // a new warning while flying (not turtle / arming stuff) goes in the log too
-    if (armed && D.wtxt[0] && strcmp(D.wtxt, p_wrn) != 0 && ms >= wrn_cool && !strstr(D.wtxt, "CRASH") && !strstr(D.wtxt, "FLIP")) {
+    if (armed && D.wtxt[0] && strcmp(D.wtxt, p_wrn) != 0 && ms >= wrn_cool && !strstr(D.wtxt, "CRASH") && !strstr(D.wtxt, "FLIP") && !wrn_ignored(D.wtxt)) {
         const int ct = core_temp(D.wtxt);
         if (ct < 0 || ct >= CPU_HOT_C) {
             char title[24], hint[40];
@@ -806,6 +811,9 @@ static const struct { const char *bf, *title, *hint; } WMAP[] = {
     {"BEACON ON", "BEACON ON", "BUZZER ACTIVE"},
     {"NOT_DISARMED", "NOT DISARMED", "DISARM FIRST"},
 };
+static bool wrn_ignored(const char *raw) {   // the visual beeper's "* * * *" is noise
+    return strchr(raw, '*') != NULL;
+}
 static int core_temp(const char *raw) {   // "CORE ?:  81?" -> 81, or -1 if not a core temperature warning
     const char *p = strstr(raw, "CORE");
     if (!p)
@@ -819,9 +827,12 @@ static void wrn_map(const char *raw, char *title, size_t tn, char *hint, size_t 
     char k[16];
     int n = 0;
     for (const char *p = raw; *p && n < 15; p++)
-        if (*p != '>' && *p != '<')
-            k[n++] = *p;
+        k[n++] = *p;
     k[n] = '\0';
+    if (n && k[n - 1] == '<')   // ">CRASH FLIP<"
+        k[--n] = '\0';
+    if (k[0] == '>')
+        memmove(k, k + 1, (size_t)n--);
     while (n > 0 && k[n - 1] == ' ')
         k[--n] = '\0';
     const char *kk = k;
@@ -846,7 +857,7 @@ static void wrn_tick(hud_t *u, uint32_t ms) {
     static char shown[16] = "";
     static uint32_t changed = 0, gone = 0;
     const int ct = core_temp(D.wtxt);
-    const bool has = D.wtxt[0] != '\0' && (ct < 0 || ct >= CPU_HOT_C);
+    const bool has = D.wtxt[0] != '\0' && (ct < 0 || ct >= CPU_HOT_C) && !wrn_ignored(D.wtxt);
     if (has && strcmp(shown, D.wtxt) != 0) {
         strcpy(shown, D.wtxt);
         changed = ms;
