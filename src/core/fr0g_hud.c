@@ -34,6 +34,10 @@
 #define C_WHT lv_color_hex(0xFFFFFF)
 #define C_GREY lv_color_hex(0x9090AC)
 #define C_HEART lv_color_hex(0xFF5757)
+#define C_ORNG lv_color_hex(0xFF9000)
+#define C_PEACH lv_color_hex(0xFFAC74)
+#define C_LAV lv_color_hex(0xAC90FF)
+#define DIM(c, k) lv_color_mix((c), lv_color_black(), (k))   // k/255 of the colour, opaque
 
 LV_FONT_DECLARE(fr0g_bl_40); LV_FONT_DECLARE(fr0g_bl_60);
 LV_FONT_DECLARE(fr0g_bl_36); LV_FONT_DECLARE(fr0g_bl_54);
@@ -42,6 +46,8 @@ LV_FONT_DECLARE(fr0g_sb_20); LV_FONT_DECLARE(fr0g_sb_30);
 LV_FONT_DECLARE(fr0g_sb_15); LV_FONT_DECLARE(fr0g_sb_23);
 LV_FONT_DECLARE(fr0g_b_15); LV_FONT_DECLARE(fr0g_b_23);
 LV_FONT_DECLARE(fr0g_b_11); LV_FONT_DECLARE(fr0g_b_17);
+LV_FONT_DECLARE(fr0g_bl_20); LV_FONT_DECLARE(fr0g_bl_30);
+LV_FONT_DECLARE(fr0g_b_16); LV_FONT_DECLARE(fr0g_b_24);
 
 enum { F_IDLE, F_BLINK, F_BLINKH, F_GL, F_GR, F_GU, F_GD, F_GRIN, F_EXCL, F_HURT, F_KO, F_PUMPED, F_DIZZY, F_N };
 LV_IMG_DECLARE(fr0g_frog_idle); LV_IMG_DECLARE(fr0g_frog_blink); LV_IMG_DECLARE(fr0g_frog_blinkH);
@@ -61,10 +67,12 @@ static lv_color_t seg_col(int k, bool lit) {
 #define NFLOAT 5
 typedef struct {
     lv_obj_t *root, *frog, *volt, *vlab, *gauge, *seg[NSEG], *mah, *amp, *lq;
-    lv_obj_t *tim, *mode, *thr_box, *thr_fill, *thr_pct, *rpm;
+    lv_obj_t *tim, *thr_box, *thr_fill, *thr_pct, *rpm;
+    lv_obj_t *blk[3], *blk_txt[3];   // LCARS status stack: armed, air mode, flight mode
     lv_obj_t *gim[2], *gdot[2], *gcore[2];
     lv_obj_t *card, *c_title, *c_heart, *c_yt, *c_gh, *c_float[NFLOAT];
-    lv_obj_t *wrn, *wrn_txt, *edge[2];
+    lv_obj_t *wrn, *wcap[2], *wmain, *wrn_txt, *edge[2];
+    const lv_font_t *f_wrn;
     int thr_h, gim_in, card_y, heart_x, heart_y, wrn_y;
     float s;
 } hud_t;
@@ -92,6 +100,24 @@ static lv_obj_t *box(lv_obj_t *p) {
     lv_obj_t *o = lv_obj_create(p);
     lv_obj_remove_style_all(o);
     lv_obj_clear_flag(o, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    return o;
+}
+// a flat, opaque LCARS block
+static lv_obj_t *fill(lv_obj_t *p, int x, int y, int w, int h, lv_color_t c, int r) {
+    lv_obj_t *o = box(p);
+    lv_obj_set_pos(o, x, y);
+    lv_obj_set_size(o, w, h);
+    lv_obj_set_style_radius(o, r, 0);
+    lv_obj_set_style_bg_color(o, c, 0);
+    lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
+    return o;
+}
+// a transparent strip whose children are clipped to its pill ends (LCARS end caps; gaps show the picture)
+static lv_obj_t *strip(lv_obj_t *p, int h) {
+    lv_obj_t *o = box(p);
+    lv_obj_set_height(o, h);
+    lv_obj_set_style_radius(o, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_clip_corner(o, true, 0);
     return o;
 }
 static lv_obj_t *text(lv_obj_t *p, const lv_font_t *f, lv_color_t c) {
@@ -141,20 +167,10 @@ void fr0g_hud_create(uint8_t fhd, lv_obj_t *parent) {
     lv_label_set_text(u->vlab, "VOLTS / CELL");
     centre(u->vlab, BAR / 2, top + S(46));
     const int gx0 = S(56), gy0 = top + S(72), gx1 = S(104), gy1 = SH - S(120);
-    u->gauge = box(L);
-    lv_obj_set_pos(u->gauge, gx0, gy0);
-    lv_obj_set_size(u->gauge, gx1 - gx0, gy1 - gy0);
-    lv_obj_set_style_radius(u->gauge, S(8), 0);
-    lv_obj_set_style_border_color(u->gauge, C_SKY, 0);
-    lv_obj_set_style_border_width(u->gauge, S(2), 0);
-    const float sh = (gy1 - gy0 - S(8)) / (float)NSEG;
+    const float sh = (gy1 - gy0) / (float)NSEG;
     for (int k = 0; k < NSEG; k++) {
-        lv_obj_t *g = box(L);
-        lv_obj_set_pos(g, gx0 + S(5), (int)(gy1 - S(4) - (k + 1) * sh + S(3)));
-        lv_obj_set_size(g, gx1 - gx0 - S(10), (int)(sh - S(3)));
-        lv_obj_set_style_bg_color(g, seg_col(k, false), 0);
-        lv_obj_set_style_bg_opa(g, LV_OPA_COVER, 0);
-        u->seg[k] = g;
+        const int y1 = (int)lrintf(gy1 - k * sh), y0 = (int)lrintf(gy1 - (k + 1) * sh) + S(4);
+        u->seg[k] = fill(L, gx0, y0, gx1 - gx0, y1 - y0, seg_col(k, false), LV_RADIUS_CIRCLE);
     }
     u->mah = text(L, f_val, C_WHT);
     centre(u->mah, BAR / 2, SH - S(100));
@@ -171,48 +187,48 @@ void fr0g_hud_create(uint8_t fhd, lv_obj_t *parent) {
     lv_obj_set_pos(R, SW - BAR, 0);
     u->tim = text(R, f_tim, C_WHT);
     centre(u->tim, BAR / 2, S(16));
-    u->mode = text(R, f_mode, C_GOLD);
-    centre(u->mode, BAR / 2, S(58));
-    const int tx0 = BAR / 2 - S(24), ty0 = S(96), ty1 = SH - S(190);
-    u->thr_box = box(R);
-    lv_obj_set_pos(u->thr_box, tx0, ty0);
-    lv_obj_set_size(u->thr_box, S(48), ty1 - ty0);
-    lv_obj_set_style_radius(u->thr_box, S(8), 0);
-    lv_obj_set_style_border_color(u->thr_box, C_SKY, 0);
-    lv_obj_set_style_border_width(u->thr_box, S(2), 0);
-    u->thr_h = ty1 - ty0 - S(10);
-    u->thr_fill = box(u->thr_box);
-    lv_obj_set_width(u->thr_fill, S(48) - S(10));
-    lv_obj_align(u->thr_fill, LV_ALIGN_BOTTOM_MID, 0, -S(5));
-    lv_obj_set_style_radius(u->thr_fill, S(4), 0);
-    lv_obj_set_style_bg_opa(u->thr_fill, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(u->thr_fill, C_SKY, 0);
-    lv_obj_set_style_bg_grad_color(u->thr_fill, C_BLUE, 0);
-    lv_obj_set_style_bg_grad_dir(u->thr_fill, LV_GRAD_DIR_VER, 0);
+    // LCARS status stack: pills with a rounded left end that run off the screen edge (clipped flat by the bar)
+    for (int k = 0; k < 3; k++) {
+        u->blk[k] = fill(R, S(8), S(62) + k * S(36), BAR, S(30), DIM(C_GREY, 60), LV_RADIUS_CIRCLE);
+        u->blk_txt[k] = text(u->blk[k], f_mode, lv_color_black());
+        lv_obj_align(u->blk_txt[k], LV_ALIGN_RIGHT_MID, -S(18), 0);   // block's visible right edge is BAR; text ends 10 px in
+    }
+    // LCARS elbow around the throttle: horizontal arm (with its label) into a vertical arm down the left
+    const int ey = S(176), arm_h = S(16), arm_w = S(22), ty1 = SH - S(196);
+    lv_obj_t *elb = fill(R, S(8), ey, BAR, ty1 - ey, C_LAV, S(24));
+    fill(R, S(8) + arm_w, ey + arm_h, BAR, ty1 - ey, lv_color_black(), S(12));   // carves the inside corner
+    lv_obj_t *tl = text(elb, f_lab, lv_color_black());
+    lv_label_set_text(tl, "THROTTLE");
+    lv_obj_align(tl, LV_ALIGN_TOP_RIGHT, -S(18), (arm_h - lv_font_get_line_height(f_lab)) / 2 + 1);
+    const int tx0 = S(8) + arm_w + S(14), tx1 = BAR - S(14), ty0 = ey + arm_h + S(14);
+    u->thr_box = fill(R, tx0, ty0, tx1 - tx0, ty1 - ty0, DIM(C_BLUE, 60), 0);
+    u->thr_h = ty1 - ty0;
+    u->thr_fill = fill(u->thr_box, 0, 0, tx1 - tx0, 0, C_BLUE, 0);
+    lv_obj_align(u->thr_fill, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_obj_set_style_border_side(u->thr_fill, LV_BORDER_SIDE_TOP, 0);
+    lv_obj_set_style_border_width(u->thr_fill, S(4), 0);
+    lv_obj_set_style_border_color(u->thr_fill, C_SKY, 0);
     u->thr_pct = text(R, f_pct, C_WHT);
-    centre(u->thr_pct, BAR / 2, ty1 + S(8));
+    lv_obj_align(u->thr_pct, LV_ALIGN_TOP_RIGHT, -(BAR - tx1), ty1 + S(6));
     u->rpm = text(R, f_small, C_SKY);
-    centre(u->rpm, BAR / 2, ty1 + S(40));
+    lv_obj_align(u->rpm, LV_ALIGN_TOP_RIGHT, -(BAR - tx1), ty1 + S(38));
     u->gim_in = S(64) - S(16);
     for (int k = 0; k < 2; k++) {
         lv_obj_t *g = box(R);
         lv_obj_set_size(g, S(64), S(64));
         lv_obj_set_pos(g, S(10) + k * S(72), SH - S(96));
         lv_obj_set_style_radius(g, S(8), 0);
-        lv_obj_set_style_bg_color(g, C_NAVY, 0);
-        lv_obj_set_style_bg_opa(g, 60, 0);
-        lv_obj_set_style_border_color(g, C_SKY, 0);
-        lv_obj_set_style_border_opa(g, 220, 0);
+        lv_obj_set_style_border_color(g, C_LAV, 0);
         lv_obj_set_style_border_width(g, S(2), 0);
         lv_obj_t *h = box(g), *v = box(g);
         lv_obj_set_size(h, S(52), fhd ? 2 : 1);
         lv_obj_center(h);
         lv_obj_set_size(v, fhd ? 2 : 1, S(52));
         lv_obj_center(v);
-        lv_obj_set_style_bg_color(h, C_SKY, 0);
-        lv_obj_set_style_bg_opa(h, 70, 0);
-        lv_obj_set_style_bg_color(v, C_SKY, 0);
-        lv_obj_set_style_bg_opa(v, 70, 0);
+        lv_obj_set_style_bg_color(h, DIM(C_LAV, 110), 0);
+        lv_obj_set_style_bg_opa(h, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(v, DIM(C_LAV, 110), 0);
+        lv_obj_set_style_bg_opa(v, LV_OPA_COVER, 0);
         lv_obj_t *dot = box(g);
         lv_obj_set_size(dot, S(12), S(12));
         lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
@@ -238,57 +254,69 @@ void fr0g_hud_create(uint8_t fhd, lv_obj_t *parent) {
         lv_obj_add_flag(e, LV_OBJ_FLAG_HIDDEN);
         u->edge[k] = e;
     }
-    u->wrn = box(u->root);
-    lv_obj_set_height(u->wrn, S(46));
-    lv_obj_set_style_radius(u->wrn, S(23), 0);
-    lv_obj_set_style_bg_opa(u->wrn, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(u->wrn, S(3), 0);
-    lv_obj_set_style_pad_hor(u->wrn, S(26), 0);
-    u->wrn_y = S(22);
-    u->wrn_txt = text(u->wrn, f_pct, C_WHT);
+    // LCARS strip: [cap] [ WARNING TEXT ] [cap], laid out when the text changes
+    u->wrn = strip(u->root, S(34));
+    u->wrn_y = S(18);
+    u->wcap[0] = fill(u->wrn, 0, 0, S(40), S(34), C_GOLD, 0);
+    u->wmain = fill(u->wrn, 0, 0, S(100), S(34), C_GOLD, 0);
+    u->wcap[1] = fill(u->wrn, 0, 0, S(40), S(34), C_GOLD, 0);
+    u->f_wrn = f_pct;
+    u->wrn_txt = text(u->wmain, f_pct, lv_color_black());
     lv_obj_center(u->wrn_txt);
     lv_obj_add_flag(u->wrn, LV_OBJ_FLAG_HIDDEN);
 
-    // ---- like & subscribe pill, centred low over the picture (hidden until 5 s after the first arm)
-    const int cw = S(340), chh = S(96);
-    u->card = box(u->root);
-    lv_obj_set_size(u->card, cw, chh);
-    u->card_y = SH - chh - S(56);
+    // ---- like & subscribe: LCARS strip low over the picture (hidden until 5 s after the first arm)
+    // [peach cap] [ LIKE & SUBSCRIBE ] [heart] [ links ] [lavender cap]
+    const lv_font_t *f_card = fhd ? &fr0g_bl_30 : &fr0g_bl_20;
+    const int ch = S(40), gap = S(6), cap = S(36);
+    const char *T = "LIKE & SUBSCRIBE", *YT = "youtube.com/@fr0gzerofpv", *GH = "github.com/fr0gzero";
+    const int tw = lv_txt_get_width(T, strlen(T), f_card, 0, LV_TEXT_FLAG_NONE) + S(32);
+    const int yw = lv_txt_get_width(YT, strlen(YT), f_small, 0, LV_TEXT_FLAG_NONE);
+    const int gw = lv_txt_get_width(GH, strlen(GH), f_small, 0, LV_TEXT_FLAG_NONE);
+    const int lw = (yw > gw ? yw : gw) + S(24), hw = S(44);
+    const int cw = cap + gap + tw + gap + hw + gap + lw + gap + cap;
+    u->card = strip(u->root, ch);
+    lv_obj_set_width(u->card, cw);
+    u->card_y = SH - ch - S(38);
     lv_obj_set_pos(u->card, (SW - cw) / 2, u->card_y);
-    lv_obj_set_style_radius(u->card, chh / 2, 0);
-    lv_obj_set_style_bg_color(u->card, C_NAVY, 0);
-    lv_obj_set_style_bg_opa(u->card, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(u->card, C_SKY, 0);
-    lv_obj_set_style_border_opa(u->card, 150, 0);
-    lv_obj_set_style_border_width(u->card, S(2), 0);
-    u->c_title = text(u->card, f_pct, C_WHT);
-    lv_label_set_text(u->c_title, "like & subscribe");
-    lv_obj_set_pos(u->c_title, S(44), S(14));
-    lv_obj_update_layout(u->c_title);
-    u->heart_x = S(44) + lv_obj_get_width(u->c_title) + S(10);
-    u->heart_y = S(18);
+    int x = 0;
+    fill(u->card, x, 0, cap, ch, C_PEACH, 0);
+    x += cap + gap;
+    lv_obj_t *tb = fill(u->card, x, 0, tw, ch, C_GOLD, 0);
+    u->c_title = text(tb, f_card, lv_color_black());
+    lv_label_set_text(u->c_title, T);
+    lv_obj_center(u->c_title);
+    x += tw + gap;
+    lv_obj_t *hb = fill(u->card, x, 0, hw, ch, C_RED, 0);
+    u->heart_x = x + hw / 2;   // heart centre, relative to the card
+    u->heart_y = ch / 2;
+    x += hw + gap;
+    lv_obj_t *lb = fill(u->card, x, 0, lw, ch, DIM(C_LAV, 56), 0);
+    x += lw + gap;
+    fill(u->card, x, 0, cap, ch, C_LAV, 0);
     for (int i = 0; i < NFLOAT; i++) {
-        lv_obj_t *h = lv_img_create(u->root);   // on the root so they can float out of the pill
+        lv_obj_t *h = lv_img_create(u->root);   // on the root so they can float up out of the strip
         lv_img_set_src(h, &fr0g_heart);
         lv_img_set_antialias(h, true);
         lv_obj_set_style_img_recolor_opa(h, LV_OPA_COVER, 0);
-        lv_obj_set_style_img_recolor(h, i % 3 == 0 ? C_HEART : i % 3 == 1 ? C_GOLD : lv_color_hex(0xFF90AC), 0);
+        lv_obj_set_style_img_recolor(h, i % 3 == 0 ? C_HEART : i % 3 == 1 ? C_GOLD : C_PEACH, 0);
         lv_obj_add_flag(h, LV_OBJ_FLAG_HIDDEN);
         u->c_float[i] = h;
     }
-    u->c_heart = lv_img_create(u->card);
+    u->c_heart = lv_img_create(hb);
     lv_img_set_src(u->c_heart, &fr0g_heart);
     lv_img_set_antialias(u->c_heart, true);
     lv_obj_set_style_img_recolor_opa(u->c_heart, LV_OPA_COVER, 0);
-    lv_obj_set_style_img_recolor(u->c_heart, C_HEART, 0);
-    lv_obj_set_pos(u->c_heart, u->heart_x, u->heart_y);
-    lv_img_set_zoom(u->c_heart, (uint16_t)(256 * S(24) / 48));
-    u->c_yt = text(u->card, f_small, C_SKY);
-    lv_label_set_text(u->c_yt, "youtube.com/@fr0gzerofpv");
-    lv_obj_set_pos(u->c_yt, S(44), S(50));
-    u->c_gh = text(u->card, f_small, C_GREY);
-    lv_label_set_text(u->c_gh, "github.com/fr0gzero");
-    lv_obj_set_pos(u->c_gh, S(44), S(70));
+    lv_obj_set_style_img_recolor(u->c_heart, C_WHT, 0);
+    lv_obj_center(u->c_heart);
+    lv_img_set_zoom(u->c_heart, (uint16_t)(256 * S(22) / 48));
+    const int lh = lv_font_get_line_height(f_small);
+    u->c_yt = text(lb, f_small, C_LAV);
+    lv_label_set_text(u->c_yt, YT);
+    lv_obj_set_pos(u->c_yt, S(12), ch / 2 - lh + 1);
+    u->c_gh = text(lb, f_small, DIM(C_LAV, 190));
+    lv_label_set_text(u->c_gh, GH);
+    lv_obj_set_pos(u->c_gh, S(12), ch / 2 - 1);
     lv_obj_add_flag(u->card, LV_OBJ_FLAG_HIDDEN);
 
     lv_obj_add_flag(u->root, LV_OBJ_FLAG_HIDDEN);
@@ -367,7 +395,7 @@ static void card_tick(hud_t *u, uint32_t ms, int64_t t_ms) {
         const float sb = fmaxf(0, sinf((t - 1.1f) * 2 * 3.14159f * 1.2f));
         beat = 1 + 0.12f * powf(sb, 6);
     }
-    lv_img_set_zoom(u->c_heart, (uint16_t)(256 * 24 * s / 48 * beat));
+    lv_img_set_zoom(u->c_heart, (uint16_t)(256 * 22 * s / 48 * beat));
     // floating hearts from the heart
     const int hx = lv_obj_get_x(u->card) + u->heart_x, hy = lv_obj_get_y(u->card) + u->heart_y;
     for (int k = 0; k < NFLOAT; k++) {
@@ -379,8 +407,8 @@ static void card_tick(hud_t *u, uint32_t ms, int64_t t_ms) {
         const float p = ph / 1.8f;
         lv_obj_clear_flag(u->c_float[k], LV_OBJ_FLAG_HIDDEN);
         lv_img_set_zoom(u->c_float[k], (uint16_t)(256 * 12 * s / 48 * (1 - p * 0.4f)));
-        lv_obj_set_pos(u->c_float[k], hx + (int)((10 * sinf(ph * 5 + k) + k * 3) * s) - (int)(12 * s),
-                       hy - (int)(p * 90 * s) - (int)(12 * s));
+        lv_obj_set_pos(u->c_float[k], hx + (int)((10 * sinf(ph * 5 + k) + k * 3) * s) - 24,   // 48 px image, zoomed about its centre
+                       hy - (int)((10 + p * 90) * s) - 24);
         lv_obj_set_style_opa(u->c_float[k], (lv_opa_t)(220 * (1 - p) * a), 0);
     }
     (void)ms;
@@ -422,22 +450,20 @@ static void wrn_tick(hud_t *u, uint32_t ms) {
     lv_obj_clear_flag(u->wrn, LV_OBJ_FLAG_HIDDEN);
     if (strcmp(lv_label_get_text(u->wrn_txt), shown) != 0) {
         lv_label_set_text(u->wrn_txt, shown);
-        lv_obj_set_width(u->wrn, LV_SIZE_CONTENT);
+        const int cap = (int)(40 * s), gap = (int)(6 * s);
+        const int mw = lv_txt_get_width(shown, strlen(shown), u->f_wrn, 0, LV_TEXT_FLAG_NONE) + (int)(48 * s);
+        lv_obj_set_x(u->wmain, cap + gap);
+        lv_obj_set_width(u->wmain, mw);
+        lv_obj_set_x(u->wcap[1], cap + gap + mw + gap);
+        lv_obj_set_width(u->wrn, cap + gap + mw + gap + cap);
     }
     lv_obj_align(u->wrn, LV_ALIGN_TOP_MID, 0, u->wrn_y - (int)((1 - a) * 14 * s));
-    if (crit) {
-        lv_obj_set_style_bg_color(u->wrn, lv_color_mix(C_RED, lv_color_hex(0x740000), (uint8_t)(255 * (0.5f + 0.5f * sinf(ms * 0.012f)))), 0);
-        lv_obj_set_style_border_color(u->wrn, C_WHT, 0);
-        lv_obj_set_style_text_color(u->wrn_txt, C_WHT, 0);
-    } else if (warn) {
-        lv_obj_set_style_bg_color(u->wrn, C_NAVY, 0);
-        lv_obj_set_style_border_color(u->wrn, C_GOLD, 0);
-        lv_obj_set_style_text_color(u->wrn_txt, C_GOLD, 0);
-    } else {
-        lv_obj_set_style_bg_color(u->wrn, C_NAVY, 0);
-        lv_obj_set_style_border_color(u->wrn, C_SKY, 0);
-        lv_obj_set_style_text_color(u->wrn_txt, C_WHT, 0);
-    }
+    const lv_color_t c = crit ? lv_color_mix(C_RED, lv_color_hex(0x740000), (uint8_t)(255 * (0.5f + 0.5f * sinf(ms * 0.012f))))
+                       : warn ? C_GOLD : C_SKY;
+    lv_obj_set_style_bg_color(u->wcap[0], c, 0);
+    lv_obj_set_style_bg_color(u->wmain, c, 0);
+    lv_obj_set_style_bg_color(u->wcap[1], c, 0);
+    lv_obj_set_style_text_color(u->wrn_txt, crit ? C_WHT : lv_color_black(), 0);
     lv_obj_set_style_opa(u->wrn, (lv_opa_t)(255 * a), 0);
 }
 
@@ -482,6 +508,14 @@ static void tick(lv_timer_t *tm) {
     snprintf(rpm, sizeof(rpm), "%d.%dk RPM", r / 1000, (r % 1000) / 100);
     const char *mode = (D.flags & 8) ? "ANGLE" : (D.flags & 16) ? "HORIZON" : "ACRO";
     const int fr = frog_frame(ms, armed);
+    const bool air = D.flags & 32;
+    static bool was_armed = false;
+    static uint32_t armed_at = 0;
+    if (armed && !was_armed)
+        armed_at = ms;
+    was_armed = armed;
+    const uint32_t since = ms - armed_at;
+    const uint8_t arm_flash = (armed && since < 450) ? (uint8_t)(255 - since * 255 / 450) : 0;
 
     for (int f = 0; f < 2; f++) {
         if (!created[f])
@@ -499,7 +533,16 @@ static void tick(lv_timer_t *tm) {
         lv_label_set_text(u->amp, amp);
         lv_label_set_text(u->lq, lq);
         lv_label_set_text(u->tim, tim);
-        lv_label_set_text(u->mode, mode);
+        // armed: red (flashes white for a moment when you arm); disarmed: dim olive
+        const lv_color_t ac = armed ? lv_color_mix(C_WHT, C_RED, arm_flash) : DIM(C_GOLD, 100);
+        lv_obj_set_style_bg_color(u->blk[0], ac, 0);
+        lv_obj_set_style_text_color(u->blk_txt[0], armed ? C_WHT : lv_color_hex(0xCEC08F), 0);
+        lv_label_set_text(u->blk_txt[0], armed ? "ARMED" : "DISARMED");
+        lv_obj_set_style_bg_color(u->blk[1], air ? C_GOLD : DIM(C_SKY, 80), 0);
+        lv_obj_set_style_text_color(u->blk_txt[1], air ? lv_color_black() : lv_color_hex(0x90ACCE), 0);
+        lv_label_set_text(u->blk_txt[1], air ? "AIR MODE" : "AIR OFF");
+        lv_obj_set_style_bg_color(u->blk[2], C_ORNG, 0);
+        lv_label_set_text(u->blk_txt[2], mode);
         lv_obj_set_height(u->thr_fill, (int)(u->thr_h * clampf(thr_s / 100.0f)));
         lv_label_set_text(u->thr_pct, tp);
         lv_label_set_text(u->rpm, rpm);
