@@ -72,6 +72,7 @@ static const lv_img_dsc_t *FROG[F_N] = {&fr0g_frog_idle, &fr0g_frog_blink, &fr0g
 #define NLOG 5
 #define NTRAIL 12
 #define NHIST 120   // graph: 30 s at 4 Hz
+#define NMSEG 16
 static lv_color_t seg_col(int k, bool lit) {
     const lv_color_t c = k < 2 ? C_RED : k < 4 ? C_WARN : C_OK;
     return lit ? c : DIM(c, 56);
@@ -89,8 +90,12 @@ typedef struct {
     lv_obj_t *gim[2], *gdot[2], *trail[2][NTRAIL], *gval[2][2];
     int gim_in, gim_pad;
     lv_obj_t *tim, *blk[3], *blk_txt[3];
-    lv_obj_t *rpm_fill, *thr_fill, *thr_pct, *rpm_val;
+    lv_obj_t *thr_fill, *thr_pct, *rpm_val;
     int bar_h;
+    lv_obj_t *mseg[4][NMSEG], *mval[4];
+    lv_obj_t *ball, *att;
+    lv_color_t *ball_buf, *ball_tpl;
+    int ball_r, ball_cs;
     lv_obj_t *wrn, *wcap[2], *wmain, *wrn_txt, *hint, *hint_txt, *edge[2];
     const lv_font_t *f_wrn, *f_hint;
     int wrn_y;
@@ -103,6 +108,7 @@ static bool created[2];
 static lv_timer_t *timer;
 static void tick(lv_timer_t *tm);
 static lv_color_t gbuf_hd[136 * 82], gbuf_fhd[204 * 123];
+static lv_color_t ball_hd[132 * 132], ball_fhd[198 * 198], tpl_hd[132 * 132], tpl_fhd[198 * 198];
 
 static struct {
     int stk[4];
@@ -110,6 +116,9 @@ static struct {
     int wsev;
     char wtxt[16];
     char name[8];
+    int roll, pitch;   // decidegrees
+    int mot[4];        // RPM, Betaflight motor order
+    bool att_ok;
 } D = {.stk = {100, 0, 100, 100}};
 static volatile uint32_t seen_ms;
 
@@ -184,6 +193,74 @@ static void set_hidden(lv_obj_t *o, bool h) {
         else
             lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN);
     }
+}
+
+// ---------------- artificial horizon ----------------
+static void ball_template(hud_t *u) {   // ring + bank scale, drawn once
+    const int cs = u->ball_cs, r = u->ball_r, c = cs / 2;
+    u->ball_tpl = u->ball_buf == ball_hd ? tpl_hd : tpl_fhd;
+    lv_color_t *b = u->ball_tpl;
+    static const int TICK[] = {-60, -45, -30, -20, -10, 0, 10, 20, 30, 45, 60};
+    const float s = u->s;
+    for (int y = 0; y < cs; y++)
+        for (int x = 0; x < cs; x++) {
+            const float dx = x - c + 0.5f, dy = y - c + 0.5f, d = sqrtf(dx * dx + dy * dy);
+            lv_color_t col = C_BLK;
+            // anti-aliased ring
+            const float ring = 1.1f * s - fabsf(d - (r - 0.1f * s));
+            if (ring > -1.0f)
+                col = lv_color_mix(C_FRAME2, C_BLK, (uint8_t)(255 * clampf(ring + 1.0f) ));
+            else if (d > r + 2 * s) {
+                const float a = atan2f(dx, -dy) * 57.2958f;
+                for (size_t i = 0; i < sizeof(TICK) / sizeof(TICK[0]); i++) {
+                    const float len = (TICK[i] % 30 == 0 ? 9 : 5) * s;
+                    if (d <= r + 2 * s + len && fabsf(a - TICK[i]) * 0.01745f * d < 1.0f * s)
+                        col = C_FRAME2;
+                }
+            }
+            b[y * cs + x] = col;
+        }
+}
+static void ball_draw(hud_t *u, float roll, float pitch) {
+    const int cs = u->ball_cs, r = u->ball_r, c = cs / 2;
+    lv_color_t *b = u->ball_buf;
+    memcpy(b, u->ball_tpl, sizeof(lv_color_t) * cs * cs);
+    const float s = u->s, ppd = r / 40.0f, ri = r - 1.2f * s;
+    const float sn = sinf(roll * 0.01745f), cn = cosf(roll * 0.01745f), h = pitch * ppd;
+    const lv_color_t sky = DIM(C_FRAME, 105), gnd = lv_color_hex(0x342210), lad = lv_color_hex(0xCCCCCC);
+    const float aptr = -roll;
+    for (int y = c - r; y < c + r; y++)
+        for (int x = c - r; x < c + r; x++) {
+            const float dx = x - c + 0.5f, dy = y - c + 0.5f, d2 = dx * dx + dy * dy;
+            if (d2 > ri * ri)
+                continue;
+            const float d = sqrtf(d2);
+            // horizon frame: u along the horizon, v down from it; rolling right turns the horizon anticlockwise
+            const float v = dx * sn + dy * cn, uu = dx * cn - dy * sn;
+            lv_color_t col = v > h ? gnd : sky;
+            if (fabsf(v - h) < 1.0f * s)
+                col = C_WHT;
+            else
+                for (int p = -20; p <= 20; p += 10) {
+                    if (!p)
+                        continue;
+                    const float half = (p == 10 || p == -10 ? 0.18f : 0.28f) * r;
+                    if (fabsf(v - (h - p * ppd)) < 0.6f * s && fabsf(uu) < half)
+                        col = lad;
+                }
+            // bank pointer, rides with the horizon
+            if (d > r - 13 * s && d < r - 3 * s) {
+                float a = atan2f(dx, -dy) * 57.2958f - aptr;
+                while (a > 180) a -= 360;
+                while (a < -180) a += 360;
+                if (fabsf(a) * 0.01745f * d < (r - 3 * s - d) * 0.5f)
+                    col = C_WARN;
+            }
+            if (d > ri - 1.0f)   // soften the edge into the ring
+                col = lv_color_mix(b[y * cs + x], col, (uint8_t)(255 * clampf(d - (ri - 1.0f))));
+            b[y * cs + x] = col;
+        }
+    lv_obj_invalidate(u->ball);
 }
 
 // ---------------- create ----------------
@@ -325,33 +402,57 @@ void fr0g_hud_create(uint8_t fhd, lv_obj_t *parent) {
         u->blk_txt[k] = text(u->blk[k], f_blk, C_BLK, "");
         lv_obj_align(u->blk_txt[k], LV_ALIGN_RIGHT_MID, -S(26), 0);   // block runs 16 px past the container; text ends 10 px in
     }
-    // LCARS elbow: header arm, then the vertical arm is the RPM gauge, throttle bar beside it
-    const int ey = sy + 3 * S(28) + S(8), armw = S(30), armh = S(14), Rr = S(22), ybot = SH - S(236);
+    // LCARS elbow: header arm, the vertical arm is the throttle, per-motor segment bars beside it
+    const int ey = sy + 3 * S(28) + S(8), armw = S(30), armh = S(14), Rr = S(22), ybot = S(300);
     lv_obj_t *elb = fill(Ri, S(8), ey, BAR + S(60), ybot + S(60) - ey, C_FRAME2, Rr);
     fill(Ri, S(8) + armw, ey + armh, BAR + S(60), ybot + S(120) - ey, C_BLK, Rr / 2);
-    lv_obj_t *el = text(elb, f_lab, C_BLK, "THROTTLE / RPM");
+    lv_obj_t *el = text(elb, f_lab, C_BLK, "THROTTLE / MOTORS");
     lv_obj_align(el, LV_ALIGN_TOP_RIGHT, -(S(60) + S(26)), (armh - lv_font_get_line_height(f_lab)) / 2 + 1);
     const int ry0 = ey + armh + Rr;
-    fill(R, S(8), ry0, armw, SH - ry0, C_BLK, 0);
+    fill(R, S(8), ry0, armw, ybot + S(60) - ry0, C_BLK, 0);
     u->bar_h = ybot - (ry0 + S(4));
-    lv_obj_t *rt = fill(R, S(8), ry0 + S(4), armw, u->bar_h, DIM(C_FRAME2, 64), S(6));
-    u->rpm_fill = fill(rt, 0, 0, armw, 0, C_FRAME2, S(6));
-    lv_obj_align(u->rpm_fill, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-    for (int k = 1; k < 5; k++)
-        fill(rt, armw - S(6), u->bar_h - u->bar_h * k / 5 - S(1), S(6), S(2), C_BLK, 0);
-    const int tx0 = S(8) + armw + S(14), tx1 = BAR - S(14);
-    lv_obj_t *tb = fill(R, tx0, ry0 + S(4), tx1 - tx0, u->bar_h, DIM(C_THR, 46), 0);
-    u->thr_fill = fill(tb, 0, 0, tx1 - tx0, 0, C_THR, 0);
+    lv_obj_t *tb = fill(R, S(8), ry0 + S(4), armw, u->bar_h, DIM(C_THR, 46), S(6));
+    u->thr_fill = fill(tb, 0, 0, armw, 0, C_THR, S(6));
     lv_obj_align(u->thr_fill, LV_ALIGN_BOTTOM_LEFT, 0, 0);
     lv_obj_set_style_border_side(u->thr_fill, LV_BORDER_SIDE_TOP, 0);
     lv_obj_set_style_border_width(u->thr_fill, S(3), 0);
     lv_obj_set_style_border_color(u->thr_fill, C_WHT, 0);
+    // motors, in frame order FL FR RL RR (Betaflight quad X: 4 2 3 1)
+    static const char *MN[4] = {"FL", "FR", "RL", "RR"};
+    const int mx0 = S(8) + armw + S(12), mx1 = BAR - S(14), sx0 = mx0 + S(20), sx1 = mx1 - S(28);
+    for (int i = 0; i < 4; i++) {
+        const int y = ry0 + S(8) + i * S(26);
+        at(text(R, f_lab, C_LAB, MN[i]), mx0, y + S(10), 0);
+        for (int k = 0; k < NMSEG; k++) {
+            const int x0 = sx0 + (k * (sx1 - sx0 + 1)) / NMSEG, x1 = sx0 + ((k + 1) * (sx1 - sx0 + 1)) / NMSEG - 1;
+            u->mseg[i][k] = fill(R, x0, y, x1 - x0 > 0 ? x1 - x0 : 1, S(12), DIM(C_FRAME2, 56), 0);
+        }
+        u->mval[i] = text(R, f_lab, C_WHT, "");
+        at(u->mval[i], mx1, y + S(10), 1);
+    }
     u->thr_pct = text(R, f_pct, C_WHT, "");
-    at(u->thr_pct, tx1, ybot + S(34), 1);
-    at(text(R, f_lab, C_LAB, "THROTTLE"), tx1, ybot + S(50), 1);
+    at(u->thr_pct, S(8), ybot + S(30), 0);
+    at(text(R, f_lab, C_LAB, "THROTTLE"), S(8), ybot + S(44), 0);
     u->rpm_val = text(R, f_rpm, C_FRAME2, "");
-    at(u->rpm_val, S(8), ybot + S(34), 0);
-    at(text(R, f_lab, C_LAB, "K RPM"), S(8), ybot + S(50), 0);
+    at(u->rpm_val, mx1, ybot + S(30), 1);
+    at(text(R, f_lab, C_LAB, "K RPM AVG"), mx1, ybot + S(44), 1);
+    // artificial horizon ball
+    u->ball_r = S(54);
+    u->ball_cs = 2 * (u->ball_r + S(12));
+    u->ball_buf = fhd ? ball_fhd : ball_hd;
+    u->ball = lv_canvas_create(R);
+    lv_canvas_set_buffer(u->ball, u->ball_buf, u->ball_cs, u->ball_cs, LV_IMG_CF_TRUE_COLOR);
+    const int bcx = S(78), bcy = ybot + S(146);
+    lv_obj_set_pos(u->ball, bcx - u->ball_cs / 2, bcy - u->ball_cs / 2);
+    ball_template(u);
+    {   // fixed aircraft symbol
+        const int r = u->ball_r, t = S(3);
+        fill(R, bcx - r * 55 / 100, bcy - t / 2, r * 37 / 100, t, C_WARN, 0);
+        fill(R, bcx + r * 18 / 100, bcy - t / 2, r * 37 / 100, t, C_WARN, 0);
+        fill(R, bcx - S(3), bcy - S(3), S(6), S(6), C_WARN, LV_RADIUS_CIRCLE);
+    }
+    u->att = text(R, f_lab, C_VAL, "");
+    at(u->att, bcx, bcy + u->ball_r + S(26), 2);
     make_gimbal(u, R, 1, BAR - S(144), SH - S(148), "ROLL", "PITCH", s);
 
     // ================= over the picture =================
@@ -973,7 +1074,32 @@ static void tick(lv_timer_t *tm) {
         }
     }
 
-    static float thr_s = 0, rpm_s = 0, rpm_full = 30000;
+    static float thr_s = 0, rpm_s = 0, rpm_full = 30000, mfull = 30000, roll_s = 0, pitch_s = 0;
+    static const int MORD[4] = {3, 1, 2, 0};   // FL FR RL RR -> Betaflight motors 4 2 3 1
+    int mavg = 0;
+    char mv[4][8], att[24];
+    for (int i = 0; i < 4; i++) {
+        mavg += D.mot[i] / 4;
+        if (D.mot[i] > mfull)
+            mfull = D.mot[i];
+    }
+    for (int i = 0; i < 4; i++) {
+        const int r = D.mot[MORD[i]];
+        snprintf(mv[i], sizeof(mv[i]), "%d.%d", r / 1000, (r % 1000) / 100);
+    }
+    // attitude: smooth a little, redraw the ball at 30 Hz when it moved
+    roll_s += (D.roll / 10.0f - roll_s) * 0.6f;
+    pitch_s += (D.pitch / 10.0f - pitch_s) * 0.6f;
+    static uint32_t ball_ms = 0;
+    static float b_roll = 999, b_pitch = 999;
+    bool ball_dirty = false;
+    if (ms - ball_ms >= 33 && (fabsf(roll_s - b_roll) > 0.3f || fabsf(pitch_s - b_pitch) > 0.3f)) {
+        ball_ms = ms;
+        b_roll = roll_s;
+        b_pitch = pitch_s;
+        ball_dirty = true;
+    }
+    snprintf(att, sizeof(att), "R %+d   P %+d", (int)lrintf(roll_s), (int)lrintf(pitch_s));
     thr_s += (D.thr - thr_s) * 0.3f;
     const int rpm = D.rpm200 * 200;
     rpm_s += (rpm - rpm_s) * 0.3f;
@@ -1041,7 +1167,18 @@ static void tick(lv_timer_t *tm) {
         set_bg(u->blk[2], C_MODE);
         set_txt(u->blk_txt[2], mode);
         lv_obj_set_height(u->thr_fill, (int)(u->bar_h * clampf(thr_s / 100.0f)));
-        lv_obj_set_height(u->rpm_fill, (int)(u->bar_h * clampf(rpm_s / rpm_full)));
+        for (int i = 0; i < 4; i++) {
+            const int r = D.mot[MORD[i]];
+            const lv_color_t c = (armed && mavg > 3000 && r < mavg * 85 / 100) ? C_WARN : C_FRAME2;
+            const int litm = (int)lrintf(NMSEG * clampf(r / mfull));
+            for (int k = 0; k < NMSEG; k++)
+                set_bg(u->mseg[i][k], k < litm ? c : DIM(c, 56));
+            set_txt(u->mval[i], mv[i]);
+            set_tc(u->mval[i], c.full == C_WARN.full ? C_WARN : C_WHT);
+        }
+        if (ball_dirty)
+            ball_draw(u, roll_s, pitch_s);
+        set_txt(u->att, att);
         set_txt(u->thr_pct, tp);
         set_txt(u->rpm_val, rv);
         for (int k = 0; k < 2; k++) {
@@ -1069,6 +1206,19 @@ static int dec(uint16_t ch) {
 }
 
 uint16_t fr0g_hud_filter(int row, int col, uint16_t ch, const uint16_t *rb) {
+    if (row == ROW - 1) {
+        if (col < 9 && rb[0] == 0x100 + 0xFB) {
+            if (col == 0) {
+                D.roll = dec(rb[1]) * 200 + dec(rb[2]) - 1800;
+                D.pitch = dec(rb[3]) * 200 + dec(rb[4]) - 1800;
+                for (int i = 0; i < 4; i++)
+                    D.mot[i] = dec(rb[5 + i]) * 250;
+                D.att_ok = true;
+            }
+            return 0x20;
+        }
+        return ch;
+    }
     if (row != ROW)
         return ch;
     if (col >= STK_COL && col < STK_COL + STK_LEN && rb[STK_COL] == MARK_STK) {
