@@ -102,7 +102,9 @@ static lv_obj_t *text(lv_obj_t *p, const lv_font_t *f, lv_color_t c) {
     return l;
 }
 // centre a label on x (left bar / right bar columns), at top y
-static void centre(lv_obj_t *l, int x, int y) { lv_obj_align(l, LV_ALIGN_TOP_MID, x - lv_obj_get_width(lv_obj_get_parent(l)) / 2, y); }
+// (the bar's own width isn't laid out yet at create time, so the bar width is passed in)
+static int g_bar;
+static void centre(lv_obj_t *l, int x, int y) { lv_obj_align(l, LV_ALIGN_TOP_MID, x - g_bar / 2, y); }
 
 void fr0g_hud_create(uint8_t fhd, lv_obj_t *parent) {
     hud_t *u = &U[fhd];
@@ -110,6 +112,7 @@ void fr0g_hud_create(uint8_t fhd, lv_obj_t *parent) {
     u->s = s;
 #define S(v) ((int)lrintf((v) * s))
     const int SW = fhd ? 1920 : 1280, SH = fhd ? 1080 : 720, BAR = S(160);
+    g_bar = BAR;
     const lv_font_t *f_volt = fhd ? &fr0g_bl_60 : &fr0g_bl_40, *f_tim = fhd ? &fr0g_bl_54 : &fr0g_bl_36,
                     *f_pct = fhd ? &fr0g_bl_39 : &fr0g_bl_26, *f_val = fhd ? &fr0g_sb_30 : &fr0g_sb_20,
                     *f_small = fhd ? &fr0g_sb_23 : &fr0g_sb_15, *f_mode = fhd ? &fr0g_b_23 : &fr0g_b_15,
