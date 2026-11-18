@@ -52,6 +52,7 @@ LV_FONT_DECLARE(fr0g_cbl_20); LV_FONT_DECLARE(fr0g_cbl_30);
 LV_FONT_DECLARE(fr0g_cbl_24);
 LV_FONT_DECLARE(fr0g_cb_11); LV_FONT_DECLARE(fr0g_cb_17);
 LV_FONT_DECLARE(fr0g_cb_13); LV_FONT_DECLARE(fr0g_cb_20);
+LV_FONT_DECLARE(fr0g_cb_12); LV_FONT_DECLARE(fr0g_cb_18);
 LV_FONT_DECLARE(fr0g_sb_18); LV_FONT_DECLARE(fr0g_sb_27);
 LV_FONT_DECLARE(fr0g_sb_15); LV_FONT_DECLARE(fr0g_sb_23);
 LV_FONT_DECLARE(fr0g_b_15); LV_FONT_DECLARE(fr0g_b_23);
@@ -293,14 +294,14 @@ void fr0g_hud_create(uint8_t fhd, lv_obj_t *parent) {
     const int ly = gy3 + S(30);
     at(text(L, f_lab, C_LAB, "LOG"), S(12), ly - S(4), 0);
     fill(L, S(40), ly - S(9), BAR - S(52), fhd ? 2 : 1, DIM(C_FRAME2, 100), 0);
-    const lv_font_t *f_lt = f_lab, *f_le = f_blk, *f_lv = f_lab;
+    const lv_font_t *f_lt = f_lab, *f_le = fhd ? &fr0g_cb_18 : &fr0g_cb_12, *f_lv = f_lab;
     for (int i = 0; i < NLOG; i++) {
         const int y = ly + S(14) + i * S(24);
         u->lg_bar[i] = fill(L, S(12), y - S(11), S(3), S(14), C_FRAME, 0);
         u->lg_t[i] = text(L, f_lt, C_LAB, "");
         at(u->lg_t[i], S(20), y, 0);
         u->lg_e[i] = text(L, f_le, C_WHT, "");
-        at(u->lg_e[i], S(20) + lv_txt_get_width("00:00", 5, f_lt, 0, LV_TEXT_FLAG_NONE) + S(6), y, 0);
+        at(u->lg_e[i], S(20) + lv_txt_get_width("0:00", 4, f_lt, 0, LV_TEXT_FLAG_NONE) + S(5), y, 0);
         u->lg_v[i] = text(L, f_lv, C_VAL, "");
         at(u->lg_v[i], BAR - S(12), y, 1);
         lv_obj_add_flag(u->lg_bar[i], LV_OBJ_FLAG_HIDDEN);
@@ -507,6 +508,9 @@ static void graph_draw(hud_t *u) {
 }
 
 // ---------------- combat log ----------------
+#define CPU_HOT_C 78   // Betaflight warns at 70 C; only bother Tom from 78 C
+static int core_temp(const char *raw);
+static void wrn_map(const char *raw, char *title, size_t tn, char *hint, size_t hn);
 typedef struct {
     char e[16], v[12];
     lv_color_t c;
@@ -528,8 +532,10 @@ static void log_push(uint32_t ms, const char *e, const char *v, lv_color_t c) {
 static void log_events(uint32_t ms) {
     static bool init = false, p_armed, p_air;
     static int p_mode, p_batt;
-    static uint32_t imp_t = 0, imp_cool = 0, send_t = 0, send_cool = 0;
-    static int imp_peak = 0, dip_min = 101;
+    static uint32_t imp_t = 0, imp_cool = 0, send_t = 0, send_cool = 0, low_t = 0, punch_t = 0, punch_cool = 0, wrn_cool = 0;
+    static int imp_peak = 0, dip_min = 101, low_thr_prev = 0, pk_g = 0, pk_da = 0, pk_rpm = 0, minute = 0, batt_pct_mark = 100;
+    static bool lifted = false;
+    static char p_wrn[16] = "";
     const bool armed = D.flags & 1, air = D.flags & 32;
     const int mode = (D.flags & 8) ? 1 : (D.flags & 16) ? 2 : 0, batt = (D.flags & 4) ? 2 : (D.flags & 2) ? 1 : 0;
     static const char *MODES[] = {"ACRO", "ANGLE", "HORIZON"};
@@ -542,12 +548,47 @@ static void log_events(uint32_t ms) {
         p_batt = batt;
         return;
     }
-    if (armed && !p_armed)
+    if (armed && !p_armed) {
         log_push(ms, "ARMED", "", C_FRAME);
+        lifted = false;
+        pk_g = pk_da = pk_rpm = 0;
+        if (D.cv >= 380)
+            batt_pct_mark = 100;   // fresh pack
+    }
     if (!armed && p_armed) {
         snprintf(v, sizeof(v), "%02d:%02d", D.tenths / 600, (D.tenths / 10) % 60);
         log_push(ms, "DISARMED", v, C_LAB);
+        // flight summary, newest on top
+        if (pk_da) {
+            snprintf(v, sizeof(v), "%d.%dA", pk_da / 10, pk_da % 10);
+            log_push(ms, "MAX AMPS", v, C_VAL2);
+        }
+        if (pk_rpm) {
+            snprintf(v, sizeof(v), "%d.%dK", pk_rpm / 1000, (pk_rpm % 1000) / 100);
+            log_push(ms, "MAX RPM", v, C_FRAME2);
+        }
+        if (pk_g >= 20) {
+            snprintf(v, sizeof(v), "%d.%dG", pk_g / 10, pk_g % 10);
+            log_push(ms, "MAX G", v, C_RED);
+        }
     }
+    // a new warning while flying (not turtle / arming stuff) goes in the log too
+    if (armed && D.wtxt[0] && strcmp(D.wtxt, p_wrn) != 0 && ms >= wrn_cool && !strstr(D.wtxt, "CRASH") && !strstr(D.wtxt, "FLIP")) {
+        const int ct = core_temp(D.wtxt);
+        if (ct < 0 || ct >= CPU_HOT_C) {
+            char title[24], hint[40];
+            wrn_map(D.wtxt, title, sizeof(title), hint, sizeof(hint));
+            if (ct >= 0) {
+                snprintf(title, sizeof(title), "CPU HOT");
+                snprintf(v, sizeof(v), "%dC", ct);
+            } else
+                v[0] = '\0';
+            title[12] = '\0';
+            log_push(ms, title, v, D.wsev >= 3 || ct >= 0 ? C_RED : C_WARN);
+            wrn_cool = ms + 4000;
+        }
+    }
+    snprintf(p_wrn, sizeof(p_wrn), "%s", D.wtxt);
     if (air != p_air)
         log_push(ms, "AIR MODE", air ? "ON" : "OFF", air ? C_OK : C_LAB);
     if (mode != p_mode)
@@ -562,6 +603,56 @@ static void log_events(uint32_t ms) {
     p_batt = batt;
     if (!armed)
         return;
+    if (D.g10 > pk_g)
+        pk_g = D.g10;
+    if (D.da > pk_da)
+        pk_da = D.da;
+    if (D.rpm200 * 200 > pk_rpm)
+        pk_rpm = D.rpm200 * 200;
+    // liftoff: first real throttle after arming
+    if (!lifted && D.thr >= 25) {
+        lifted = true;
+        log_push(ms, "LIFTOFF", "", C_ACC);
+    }
+    // flight time milestones
+    if (D.tenths / 600 > minute) {
+        minute = D.tenths / 600;
+        snprintf(v, sizeof(v), "%dMIN", minute);
+        log_push(ms, "FLIGHT TIME", v, C_LAB);
+    } else if (D.tenths / 600 < minute)
+        minute = D.tenths / 600;
+    // battery milestones (same 3.40-4.15 V scale as the gauge)
+    {
+        const int bp = (int)(100 * clampf((D.cv - 340) / 75.0f));
+        if (bp <= 50 && batt_pct_mark > 50) {
+            batt_pct_mark = 50;
+            log_push(ms, "BATTERY", "50%", C_WARN);
+        } else if (bp <= 25 && batt_pct_mark > 25) {
+            batt_pct_mark = 25;
+            log_push(ms, "BATTERY", "25%", C_RED);
+        }
+    }
+    // punch: low to high throttle in under a third of a second
+    if (D.thr <= 30)
+        punch_t = ms;
+    if (D.thr >= 85 && punch_t && ms - punch_t < 330 && ms >= punch_cool && low_thr_prev < 85) {
+        log_push(ms, "PUNCH OUT", "", C_VAL);
+        punch_cool = ms + 4000;
+        punch_t = 0;
+    }
+    low_thr_prev = D.thr;
+    // freefall / dive: throttle near zero for a while (logged when the throttle comes back)
+    if (D.thr <= 5) {
+        if (!low_t)
+            low_t = ms;
+    } else {
+        if (low_t && ms - low_t >= 800) {
+            const uint32_t d = ms - low_t;
+            snprintf(v, sizeof(v), "%d.%dS", (int)(d / 1000), (int)(d % 1000) / 100);
+            log_push(ms, "FREEFALL", v, C_FRAME);
+        }
+        low_t = 0;
+    }
     // impact: a G spike, logged with its peak once it settles
     if (D.g10 >= 30 && ms >= imp_cool) {
         if (!imp_t)
@@ -570,7 +661,7 @@ static void log_events(uint32_t ms) {
             imp_peak = D.g10;
     }
     if (imp_t && (D.g10 < 20 || ms - imp_t > 600)) {
-        snprintf(v, sizeof(v), "%d.%d G", imp_peak / 10, imp_peak % 10);
+        snprintf(v, sizeof(v), "%d.%dG", imp_peak / 10, imp_peak % 10);
         log_push(ms, "IMPACT", v, C_RED);
         imp_t = 0;
         imp_peak = 0;
@@ -619,7 +710,7 @@ static void log_draw(hud_t *u, uint32_t ms) {
             continue;
         }
         char t[8];
-        snprintf(t, sizeof(t), "%02d:%02d", e->tenths / 600, (e->tenths / 10) % 60);
+        snprintf(t, sizeof(t), "%d:%02d", (e->tenths / 600) % 10, (e->tenths / 10) % 60);
         set_hidden(u->lg_bar[i], false);
         set_txt(u->lg_t[i], t);
         set_txt(u->lg_e[i], e->e);
@@ -715,7 +806,16 @@ static const struct { const char *bf, *title, *hint; } WMAP[] = {
     {"BEACON ON", "BEACON ON", "BUZZER ACTIVE"},
     {"NOT_DISARMED", "NOT DISARMED", "DISARM FIRST"},
 };
-static void wrn_map(const char *raw, char *title, size_t tn, const char **hint) {
+static int core_temp(const char *raw) {   // "CORE ?:  81?" -> 81, or -1 if not a core temperature warning
+    const char *p = strstr(raw, "CORE");
+    if (!p)
+        return -1;
+    for (p += 4; *p; p++)
+        if (*p >= '0' && *p <= '9')
+            return atoi(p);
+    return -1;
+}
+static void wrn_map(const char *raw, char *title, size_t tn, char *hint, size_t hn) {
     char k[16];
     int n = 0;
     for (const char *p = raw; *p && n < 15; p++)
@@ -727,19 +827,26 @@ static void wrn_map(const char *raw, char *title, size_t tn, const char **hint) 
     const char *kk = k;
     while (*kk == ' ')
         kk++;
+    const int t = core_temp(kk);
+    if (t >= 0) {
+        snprintf(title, tn, "CPU OVERHEAT");
+        snprintf(hint, hn, "CORE CPU TEMPERATURE %d C", t);
+        return;
+    }
     for (size_t i = 0; i < sizeof(WMAP) / sizeof(WMAP[0]); i++)
         if (strcmp(kk, WMAP[i].bf) == 0) {
             snprintf(title, tn, "%s", WMAP[i].title);
-            *hint = WMAP[i].hint;
+            snprintf(hint, hn, "%s", WMAP[i].hint);
             return;
         }
     snprintf(title, tn, "%s", kk);
-    *hint = "";
+    hint[0] = '\0';
 }
 static void wrn_tick(hud_t *u, uint32_t ms) {
     static char shown[16] = "";
     static uint32_t changed = 0, gone = 0;
-    const bool has = D.wtxt[0] != '\0';
+    const int ct = core_temp(D.wtxt);
+    const bool has = D.wtxt[0] != '\0' && (ct < 0 || ct >= CPU_HOT_C);
     if (has && strcmp(shown, D.wtxt) != 0) {
         strcpy(shown, D.wtxt);
         changed = ms;
@@ -750,7 +857,7 @@ static void wrn_tick(hud_t *u, uint32_t ms) {
         gone = ms;
     const float s = u->s;
     const float a = has ? clampf((ms - changed) / 150.0f) : 1 - clampf((ms - gone) / 250.0f);
-    const bool crit = D.wsev >= 3, warn = D.wsev == 2;
+    const bool crit = D.wsev >= 3 || core_temp(shown) >= 0, warn = D.wsev == 2;
     const lv_color_t pulse = lv_color_mix(C_RED, lv_color_hex(0x340000), (uint8_t)(255 * (0.5f + 0.5f * sinf(ms * 0.012f))));
     for (int k = 0; k < 2; k++) {
         set_hidden(u->edge[k], !(crit && has));
@@ -762,9 +869,8 @@ static void wrn_tick(hud_t *u, uint32_t ms) {
         set_hidden(u->hint, true);
         return;
     }
-    char title[24];
-    const char *hint;
-    wrn_map(shown, title, sizeof(title), &hint);
+    char title[24], hint[40];
+    wrn_map(shown, title, sizeof(title), hint, sizeof(hint));
     set_hidden(u->wrn, false);
     if (strcmp(lv_label_get_text(u->wrn_txt), title) != 0) {
         lv_label_set_text(u->wrn_txt, title);
