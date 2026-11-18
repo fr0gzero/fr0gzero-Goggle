@@ -54,6 +54,10 @@ static const lv_img_dsc_t *FROG[F_N] = {&fr0g_frog_idle, &fr0g_frog_blink, &fr0g
                                         &fr0g_frog_exclgrin, &fr0g_frog_hurt, &fr0g_frog_ko, &fr0g_frog_pumped, &fr0g_frog_dizzy};
 
 #define NSEG 10
+static lv_color_t seg_col(int k, bool lit) {
+    const lv_color_t c = k <= 1 ? C_RED : k <= 3 ? C_GOLD : C_GRN;
+    return lit ? c : lv_color_mix(c, lv_color_black(), 56);   // unlit: a dark, opaque version of its own colour
+}
 #define NFLOAT 5
 typedef struct {
     lv_obj_t *root, *frog, *volt, *vlab, *gauge, *seg[NSEG], *mah, *amp, *lq;
@@ -113,10 +117,14 @@ void fr0g_hud_create(uint8_t fhd, lv_obj_t *parent) {
 
     u->root = box(parent);
     lv_obj_set_size(u->root, SW, SH);
+    // the OSD screen has theme padding; sit the HUD on the real screen edges
+    lv_obj_set_pos(u->root, -lv_obj_get_style_pad_left(parent, LV_PART_MAIN), -lv_obj_get_style_pad_top(parent, LV_PART_MAIN));
 
     // ---- left bar: frog, volts, battery gauge, mAh / current / LQ
     lv_obj_t *L = box(u->root);
     lv_obj_set_size(L, BAR, SH);
+    lv_obj_set_style_bg_color(L, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(L, LV_OPA_COVER, 0);
     u->frog = lv_img_create(L);
     lv_img_set_src(u->frog, FROG[F_IDLE]);
     lv_img_set_antialias(u->frog, true);
@@ -141,7 +149,7 @@ void fr0g_hud_create(uint8_t fhd, lv_obj_t *parent) {
         lv_obj_t *g = box(L);
         lv_obj_set_pos(g, gx0 + S(5), (int)(gy1 - S(4) - (k + 1) * sh + S(3)));
         lv_obj_set_size(g, gx1 - gx0 - S(10), (int)(sh - S(3)));
-        lv_obj_set_style_bg_color(g, k <= 1 ? C_RED : k <= 3 ? C_GOLD : C_GRN, 0);
+        lv_obj_set_style_bg_color(g, seg_col(k, false), 0);
         lv_obj_set_style_bg_opa(g, LV_OPA_COVER, 0);
         u->seg[k] = g;
     }
@@ -155,6 +163,8 @@ void fr0g_hud_create(uint8_t fhd, lv_obj_t *parent) {
     // ---- right bar: timer, mode, throttle bar, % / RPM, stick gimbals
     lv_obj_t *R = box(u->root);
     lv_obj_set_size(R, BAR, SH);
+    lv_obj_set_style_bg_color(R, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(R, LV_OPA_COVER, 0);
     lv_obj_set_pos(R, SW - BAR, 0);
     u->tim = text(R, f_tim, C_WHT);
     centre(u->tim, BAR / 2, S(16));
@@ -222,16 +232,13 @@ void fr0g_hud_create(uint8_t fhd, lv_obj_t *parent) {
         lv_obj_set_pos(e, k == 0 ? BAR : SW - BAR - S(5), 0);
         lv_obj_set_style_bg_color(e, C_RED, 0);
         lv_obj_set_style_bg_opa(e, LV_OPA_COVER, 0);
-        lv_obj_set_style_shadow_color(e, C_RED, 0);
-        lv_obj_set_style_shadow_width(e, S(30), 0);
-        lv_obj_set_style_shadow_spread(e, S(4), 0);
         lv_obj_add_flag(e, LV_OBJ_FLAG_HIDDEN);
         u->edge[k] = e;
     }
     u->wrn = box(u->root);
     lv_obj_set_height(u->wrn, S(46));
     lv_obj_set_style_radius(u->wrn, S(23), 0);
-    lv_obj_set_style_bg_opa(u->wrn, 190, 0);
+    lv_obj_set_style_bg_opa(u->wrn, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(u->wrn, S(3), 0);
     lv_obj_set_style_pad_hor(u->wrn, S(26), 0);
     u->wrn_y = S(22);
@@ -243,11 +250,11 @@ void fr0g_hud_create(uint8_t fhd, lv_obj_t *parent) {
     const int cw = S(340), chh = S(96);
     u->card = box(u->root);
     lv_obj_set_size(u->card, cw, chh);
-    u->card_y = SH - chh - S(40);
+    u->card_y = SH - chh - S(56);
     lv_obj_set_pos(u->card, (SW - cw) / 2, u->card_y);
     lv_obj_set_style_radius(u->card, chh / 2, 0);
     lv_obj_set_style_bg_color(u->card, C_NAVY, 0);
-    lv_obj_set_style_bg_opa(u->card, 120, 0);
+    lv_obj_set_style_bg_opa(u->card, LV_OPA_COVER, 0);
     lv_obj_set_style_border_color(u->card, C_SKY, 0);
     lv_obj_set_style_border_opa(u->card, 150, 0);
     lv_obj_set_style_border_width(u->card, S(2), 0);
@@ -400,7 +407,7 @@ static void wrn_tick(hud_t *u, uint32_t ms) {
     for (int k = 0; k < 2; k++) {
         if (crit && has) {
             lv_obj_clear_flag(u->edge[k], LV_OBJ_FLAG_HIDDEN);
-            lv_obj_set_style_opa(u->edge[k], (lv_opa_t)(120 + 120 * (0.5f + 0.5f * sinf(ms * 0.012f))), 0);
+            lv_obj_set_style_bg_color(u->edge[k], lv_color_mix(C_RED, lv_color_hex(0x340000), (uint8_t)(255 * (0.5f + 0.5f * sinf(ms * 0.012f)))), 0);
         } else {
             lv_obj_add_flag(u->edge[k], LV_OBJ_FLAG_HIDDEN);
         }
@@ -416,18 +423,15 @@ static void wrn_tick(hud_t *u, uint32_t ms) {
     }
     lv_obj_align(u->wrn, LV_ALIGN_TOP_MID, 0, u->wrn_y - (int)((1 - a) * 14 * s));
     if (crit) {
-        lv_obj_set_style_bg_color(u->wrn, C_RED, 0);
-        lv_obj_set_style_bg_opa(u->wrn, (lv_opa_t)(170 + 70 * (0.5f + 0.5f * sinf(ms * 0.012f))), 0);
+        lv_obj_set_style_bg_color(u->wrn, lv_color_mix(C_RED, lv_color_hex(0x740000), (uint8_t)(255 * (0.5f + 0.5f * sinf(ms * 0.012f)))), 0);
         lv_obj_set_style_border_color(u->wrn, C_WHT, 0);
         lv_obj_set_style_text_color(u->wrn_txt, C_WHT, 0);
     } else if (warn) {
         lv_obj_set_style_bg_color(u->wrn, C_NAVY, 0);
-        lv_obj_set_style_bg_opa(u->wrn, 190, 0);
         lv_obj_set_style_border_color(u->wrn, C_GOLD, 0);
         lv_obj_set_style_text_color(u->wrn_txt, C_GOLD, 0);
     } else {
         lv_obj_set_style_bg_color(u->wrn, C_NAVY, 0);
-        lv_obj_set_style_bg_opa(u->wrn, 170, 0);
         lv_obj_set_style_border_color(u->wrn, C_SKY, 0);
         lv_obj_set_style_text_color(u->wrn_txt, C_WHT, 0);
     }
@@ -460,7 +464,7 @@ static void tick(lv_timer_t *tm) {
     thr_s += (D.thr - thr_s) * 0.3f;
     for (int i = 0; i < 4; i++)
         st[i] += (D.stk[i] - st[i]) * 0.45f;
-    float pct = (D.cv - 330) / 90.0f;
+    float pct = (D.cv - 340) / 75.0f;   // 3.40 V empty .. 4.15 V full (whoop cells sag early)
     pct = clampf(pct);
     const int lit = (int)lrintf(pct * NSEG);
 
@@ -480,12 +484,14 @@ static void tick(lv_timer_t *tm) {
         if (!created[f])
             continue;
         hud_t *u = &U[f];
-        if (lv_img_get_src(u->frog) != FROG[fr])
+        if (lv_img_get_src(u->frog) != FROG[fr]) {
             lv_img_set_src(u->frog, FROG[fr]);
+            lv_img_set_pivot(u->frog, 0, 0);   // set_src re-centres the pivot, which shrank the frog off its spot
+        }
         lv_label_set_text(u->volt, volt);
         lv_obj_set_style_text_color(u->volt, crit ? C_RED : warn ? C_GOLD : C_WHT, 0);
         for (int k = 0; k < NSEG; k++)
-            lv_obj_set_style_bg_opa(u->seg[k], k < lit ? LV_OPA_COVER : 40, 0);
+            lv_obj_set_style_bg_color(u->seg[k], seg_col(k, k < lit), 0);
         lv_label_set_text(u->mah, mah);
         lv_label_set_text(u->amp, amp);
         lv_label_set_text(u->lq, lq);
