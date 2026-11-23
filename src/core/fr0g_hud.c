@@ -1,4 +1,5 @@
 #include "fr0g_hud.h"
+#include "fr0g_hud_int.h"
 
 #include <math.h>
 #include <stdbool.h>
@@ -69,7 +70,6 @@ static const lv_img_dsc_t *FROG[F_N] = {&fr0g_frog_idle, &fr0g_frog_blink, &fr0g
 
 #define NSEG 12
 #define NFLOAT 5
-#define NLOG 5
 #define NTRAIL 12
 #define NHIST 120   // graph: 30 s at 4 Hz
 #define NMSEG 16
@@ -110,16 +110,7 @@ static void tick(lv_timer_t *tm);
 static lv_color_t gbuf_hd[136 * 82], gbuf_fhd[204 * 123];
 static lv_color_t ball_hd[132 * 132], ball_fhd[198 * 198], tpl_hd[132 * 132], tpl_fhd[198 * 198];
 
-static struct {
-    int stk[4];
-    int cv, da, mah, lq, thr, rpm200, g10, tenths, flags;
-    int wsev;
-    char wtxt[16];
-    char name[8];
-    int roll, pitch;   // decidegrees
-    int mot[4];        // RPM, Betaflight motor order
-    bool att_ok;
-} D = {.stk = {100, 0, 100, 100}};
+fr0g_data_t D = {.stk = {100, 0, 100, 100}};
 static volatile uint32_t seen_ms;
 
 static uint32_t now_ms(void) {
@@ -528,6 +519,7 @@ void fr0g_hud_create(uint8_t fhd, lv_obj_t *parent) {
 
     lv_obj_add_flag(u->root, LV_OBJ_FLAG_HIDDEN);
     created[fhd] = true;
+    fr0g_gouache_create(fhd, parent);
     if (!timer)
         timer = lv_timer_create(tick, 16, NULL);
 #undef S
@@ -613,18 +605,8 @@ static void graph_draw(hud_t *u) {
 }
 
 // ---------------- combat log ----------------
-#define CPU_HOT_C 78   // Betaflight warns at 70 C; only bother Tom from 78 C
-static int core_temp(const char *raw);
-static bool wrn_ignored(const char *raw);
-static void wrn_map(const char *raw, char *title, size_t tn, char *hint, size_t hn);
-typedef struct {
-    char e[16], v[12];
-    lv_color_t c;
-    uint16_t tenths;
-    uint32_t born;
-} ev_t;
-static ev_t EV[NLOG];
-static int n_ev;
+ev_t EV[NLOG];
+int n_ev;
 static void log_push(uint32_t ms, const char *e, const char *v, lv_color_t c) {
     memmove(&EV[1], &EV[0], sizeof(ev_t) * (NLOG - 1));
     snprintf(EV[0].e, sizeof(EV[0].e), "%s", e);
@@ -912,10 +894,10 @@ static const struct { const char *bf, *title, *hint; } WMAP[] = {
     {"BEACON ON", "BEACON ON", "BUZZER ACTIVE"},
     {"NOT_DISARMED", "NOT DISARMED", "DISARM FIRST"},
 };
-static bool wrn_ignored(const char *raw) {   // the visual beeper's "* * * *" is noise
+bool wrn_ignored(const char *raw) {   // the visual beeper's "* * * *" is noise
     return strchr(raw, '*') != NULL;
 }
-static int core_temp(const char *raw) {   // "CORE ?:  81?" -> 81, or -1 if not a core temperature warning
+int core_temp(const char *raw) {   // "CORE ?:  81?" -> 81, or -1 if not a core temperature warning
     const char *p = strstr(raw, "CORE");
     if (!p)
         return -1;
@@ -924,7 +906,7 @@ static int core_temp(const char *raw) {   // "CORE ?:  81?" -> 81, or -1 if not 
             return atoi(p);
     return -1;
 }
-static void wrn_map(const char *raw, char *title, size_t tn, char *hint, size_t hn) {
+void wrn_map(const char *raw, char *title, size_t tn, char *hint, size_t hn) {
     char k[16];
     int n = 0;
     for (const char *p = raw; *p && n < 15; p++)
@@ -1027,17 +1009,27 @@ static void tick(lv_timer_t *tm) {
         }
         last_live = ms;
     }
+    // theme per quad: 4-2 flies the gouache almanac, everything else Science Teal
+    const char *cn = D.name;
+    if (cn[0] == 'M' && cn[1] == 'K')
+        cn += cn[2] == '.' ? 3 : 2;
+    const bool gouache = live && strcmp(cn, "4-2") == 0;
     for (int f = 0; f < 2; f++)
         if (created[f])
-            set_hidden(U[f].root, !live);
-    if (!live)
+            set_hidden(U[f].root, !live || gouache);
+    if (!live) {
+        fr0g_gouache_tick(ms, -1, false);
         return;
+    }
 
     const bool armed = D.flags & 1, warn = D.flags & 2, crit = D.flags & 4, air = D.flags & 32;
     if (armed && first_arm_ms < 0)
         first_arm_ms = ms;
     const int64_t card_t = first_arm_ms < 0 ? -1 : (int64_t)ms - first_arm_ms - 5000;
     log_events(ms);
+    fr0g_gouache_tick(ms, card_t, gouache);
+    if (gouache)
+        return;
 
     // history (4 Hz)
     static uint32_t hist_ms = 0;
