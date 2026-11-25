@@ -100,6 +100,7 @@ typedef struct {
     const lv_font_t *f_wrn, *f_hint;
     int wrn_y;
     lv_obj_t *card, *c_title, *c_heart, *c_yt, *c_gh, *c_float[NFLOAT];
+    lv_obj_t *boot, *b_title, *b_craft, *b_line[4], *b_val[4], *b_motto;
     int card_y, heart_x, heart_y;
 } hud_t;
 
@@ -516,6 +517,30 @@ void fr0g_hud_create(uint8_t fhd, lv_obj_t *parent) {
     u->c_gh = text(lb, f_small, DIM(C_FRAME2, 180), GH);
     lv_obj_set_pos(u->c_gh, S(11), ch / 2 - 1);
     lv_obj_add_flag(u->card, LV_OBJ_FLAG_HIDDEN);
+
+    // boot screen: LCARS panel over the picture until first arm
+    {
+        const int bw = S(440), bh = S(252);
+        u->boot = fill(u->root, (SW - bw) / 2, (SH - bh) / 2, bw, bh, C_BLK, S(14));
+        fill(u->boot, 0, S(20), bw, S(20), C_FRAME, 0);   // squares off the bottom of the header (drawn under it)
+        lv_obj_t *hdr = fill(u->boot, 0, 0, bw, S(40), C_FRAME, S(14));
+        u->b_title = text(hdr, u->f_wrn, C_BLK, "");
+        lv_obj_align(u->b_title, LV_ALIGN_LEFT_MID, S(18), S(1));
+        lv_obj_t *bt = text(hdr, f_blk, C_BLK, "BOOT");
+        lv_obj_align(bt, LV_ALIGN_RIGHT_MID, -S(18), 0);
+        u->b_craft = text(u->boot, f_val, C_FRAME2, "");
+        lv_obj_set_pos(u->b_craft, S(18), S(50));
+        fill(u->boot, S(18), S(80), bw - S(36), fhd ? 2 : 1, DIM(C_FRAME2, 110), 0);
+        for (int i = 0; i < 4; i++) {
+            u->b_line[i] = text(u->boot, f_blk, C_LAB, "");
+            lv_obj_set_pos(u->b_line[i], S(18), S(92) + i * S(28));
+            u->b_val[i] = text(u->boot, f_blk, C_OK, "");
+            lv_obj_align(u->b_val[i], LV_ALIGN_TOP_RIGHT, -S(18), S(92) + i * S(28));
+        }
+        u->b_motto = text(u->boot, f_small, C_LAB, "fly it, break it, fix it, send it again.");
+        lv_obj_align(u->b_motto, LV_ALIGN_BOTTOM_MID, 0, -S(12));
+        lv_obj_add_flag(u->boot, LV_OBJ_FLAG_HIDDEN);
+    }
 
     lv_obj_add_flag(u->root, LV_OBJ_FLAG_HIDDEN);
     created[fhd] = true;
@@ -994,20 +1019,53 @@ static void wrn_tick(hud_t *u, uint32_t ms) {
 
 // ---------------- frame tick ----------------
 static int64_t first_arm_ms = -1;
+// ---------------- boot screen (once per pack, until arming) ----------------
+fr0g_boot_t BOOT;
+static uint32_t boot_ms;
+static void boot_update(uint32_t ms, bool armed) {
+    const uint32_t t = ms - boot_ms;
+    BOOT.show = !armed && t < 5000;
+    BOOT.visible = (int)(t / 280) - 1;   // lines type in one after another
+    const char *nm = D.name;
+    if (nm[0] == 'M' && nm[1] == 'K')
+        nm += nm[2] == '.' ? 3 : 2;
+    const char *model = !strcmp(nm, "4-1") ? "AIR65" : !strcmp(nm, "4-2") ? "MOBULA 6" : !strcmp(nm, "5-1") ? "MOBULA 8"
+                      : !strcmp(nm, "6-1") ? "ANGEL 35" : !strcmp(nm, "6-2") ? "BEE35" : "";
+    snprintf(BOOT.title, sizeof(BOOT.title), "fr0gOS %s", FR0G_VERSION);
+    snprintf(BOOT.craft, sizeof(BOOT.craft), "%s  %s", nm, model);
+    int n = 0;
+    snprintf(BOOT.line[n], sizeof(BOOT.line[n]), "RADIO LINK");
+    snprintf(BOOT.val[n], sizeof(BOOT.val[n]), D.lq > 0 ? "OK %d%%" : "WAIT", D.lq);
+    BOOT.ok[n++] = D.lq > 0 ? 1 : 0;
+    snprintf(BOOT.line[n], sizeof(BOOT.line[n]), "BATTERY");
+    snprintf(BOOT.val[n], sizeof(BOOT.val[n]), "%d.%02dV %s", D.cv / 100, D.cv % 100, D.cv >= 370 ? "OK" : D.cv >= 330 ? "LOW" : "USB");
+    BOOT.ok[n++] = D.cv >= 370 ? 2 : 0;
+    snprintf(BOOT.line[n], sizeof(BOOT.line[n]), "ATTITUDE");
+    snprintf(BOOT.val[n], sizeof(BOOT.val[n]), D.att_ok ? "OK" : "OLD FC FW");
+    BOOT.ok[n++] = D.att_ok ? 2 : 0;
+    snprintf(BOOT.line[n], sizeof(BOOT.line[n]), "HUD LINK");
+    snprintf(BOOT.val[n], sizeof(BOOT.val[n]), "OK");
+    BOOT.ok[n++] = 2;
+    if (D.lq > 0)
+        BOOT.ok[0] = 2;
+    BOOT.n = n;
+}
 static void tick(lv_timer_t *tm) {
     (void)tm;
     const uint32_t ms = now_ms();
-    const bool live = (ms - seen_ms) < 600;
-    static uint32_t last_live = 0;
+    // hold the HUD through short video/OSD dropouts instead of blinking it off
+    const bool live = (ms - seen_ms) < 3000;
+    static uint32_t prev_seen = 0;
     static bool hist_init = false;
-    if (live) {
-        if (last_live && ms - last_live > 3000) {
-            // the quad was unplugged for a while: new pack, new flight
+    if (seen_ms != prev_seen) {
+        if (!prev_seen || seen_ms - prev_seen > 8000) {
+            // first contact, or the quad was unplugged for a while: new pack, new flight, boot screen
             first_arm_ms = -1;
             n_ev = 0;
             hist_init = false;
+            boot_ms = seen_ms;
         }
-        last_live = ms;
+        prev_seen = seen_ms;
     }
     // theme per quad: 4-2 flies the gouache almanac, everything else Science Teal
     const char *cn = D.name;
@@ -1025,6 +1083,7 @@ static void tick(lv_timer_t *tm) {
     const bool armed = D.flags & 1, warn = D.flags & 2, crit = D.flags & 4, air = D.flags & 32;
     if (armed && first_arm_ms < 0)
         first_arm_ms = ms;
+    boot_update(ms, armed);
     const int64_t card_t = first_arm_ms < 0 ? -1 : (int64_t)ms - first_arm_ms - 5000;
     log_events(ms);
     fr0g_gouache_tick(ms, card_t, gouache);
@@ -1185,6 +1244,18 @@ static void tick(lv_timer_t *tm) {
             set_txt(u->gval[k][1], gv[k * 2 + 1]);
         }
         card_tick(u, card_t);
+        set_hidden(u->boot, !BOOT.show);
+        if (BOOT.show) {
+            set_txt(u->b_title, BOOT.title);
+            set_txt(u->b_craft, BOOT.visible >= 0 ? BOOT.craft : "");
+            for (int i = 0; i < 4; i++) {
+                const bool on = i < BOOT.n && BOOT.visible > i;
+                set_txt(u->b_line[i], on ? BOOT.line[i] : "");
+                set_txt(u->b_val[i], on ? BOOT.val[i] : "");
+                set_tc(u->b_val[i], BOOT.ok[i] ? C_OK : C_WARN);
+            }
+            set_hidden(u->b_motto, BOOT.visible <= BOOT.n);
+        }
         wrn_tick(u, ms);
     }
 }

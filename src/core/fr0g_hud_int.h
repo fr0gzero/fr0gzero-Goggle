@@ -32,5 +32,15 @@ int core_temp(const char *raw);
 bool wrn_ignored(const char *raw);
 void wrn_map(const char *raw, char *title, size_t tn, char *hint, size_t hn);
 
+#define FR0G_VERSION "2.6"
+typedef struct {
+    bool show;
+    int visible;   // how many lines have typed in so far (title = line -1)
+    int n;
+    char title[24], craft[32], line[4][16], val[4][16];
+    uint8_t ok[4];   // 0 = waiting / bad, 2 = good
+} fr0g_boot_t;
+extern fr0g_boot_t BOOT;
+
 void fr0g_gouache_create(uint8_t fhd, lv_obj_t *parent);
 void fr0g_gouache_tick(uint32_t ms, int64_t card_t, bool show);

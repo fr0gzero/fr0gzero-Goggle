@@ -59,6 +59,7 @@ typedef struct {
     lv_obj_t *wrn, *wrn_bg, *wrn_txt, *hint, *hint_txt, *edge[2];
     lv_obj_t *card, *c_heart;
     int card_y;
+    lv_obj_t *boot, *b_title, *b_craft, *b_line[4], *b_val[4], *b_motto;
 } gh_t;
 
 static gh_t G[2];
@@ -329,6 +330,29 @@ void fr0g_gouache_create(uint8_t fhd, lv_obj_t *parent) {
     lv_obj_align(gh, LV_ALIGN_LEFT_MID, S(262), S(10));
     lv_obj_add_flag(u->card, LV_OBJ_FLAG_HIDDEN);
 
+    // boot screen: a paper card over the picture until first arm
+    {
+        const int bw = S(420), bh = S(250);
+        u->boot = fill(R, (SW - bw) / 2, (SH - bh) / 2, bw, bh, G_PAPER, S(6));
+        lv_obj_set_style_border_color(u->boot, G_INK, 0);
+        lv_obj_set_style_border_width(u->boot, S(2), 0);
+        u->b_title = text(u->boot, f_name, G_PRUSS);
+        lv_obj_align(u->b_title, LV_ALIGN_TOP_MID, 0, S(12));
+        u->b_craft = text(u->boot, f_hint, G_INK);
+        lv_obj_align(u->b_craft, LV_ALIGN_TOP_MID, 0, S(46));
+        fill(u->boot, S(30), S(74), bw - S(60), fhd ? 2 : 1, G_INK, 0);
+        for (int i = 0; i < 4; i++) {
+            u->b_line[i] = text(u->boot, f_caps, G_INK);
+            lv_obj_set_pos(u->b_line[i], S(30), S(86) + i * S(28));
+            u->b_val[i] = text(u->boot, f_ser, G_SAGE);
+            lv_obj_align(u->b_val[i], LV_ALIGN_TOP_RIGHT, -S(30), S(88) + i * S(28));
+        }
+        u->b_motto = text(u->boot, f_it, G_RUST);
+        lv_label_set_text(u->b_motto, "Fly it, break it, fix it, send it again.");
+        lv_obj_align(u->b_motto, LV_ALIGN_BOTTOM_MID, 0, -S(12));
+        lv_obj_add_flag(u->boot, LV_OBJ_FLAG_HIDDEN);
+    }
+
     lv_obj_add_flag(u->root, LV_OBJ_FLAG_HIDDEN);
     g_created[fhd] = true;
 #undef S
@@ -491,6 +515,21 @@ void fr0g_gouache_tick(uint32_t ms, int64_t card_t, bool show) {
             set_hidden(u->hint, wh[0] == '\0');
             set_txt(u->hint_txt, wh);
             lv_obj_set_style_opa(u->hint, (lv_opa_t)(255 * wa), 0);
+        }
+        // boot card
+        set_hidden(u->boot, !BOOT.show);
+        if (BOOT.show) {
+            char bc[48];
+            snprintf(bc, sizeof(bc), "Mk. %s%s", nm, !strcmp(nm, "4-2") ? ", the Mobula Six" : "");
+            set_txt(u->b_title, BOOT.title);
+            set_txt(u->b_craft, BOOT.visible >= 0 ? bc : "");
+            for (int i = 0; i < 4; i++) {
+                const bool on = i < BOOT.n && BOOT.visible > i;
+                set_txt(u->b_line[i], on ? BOOT.line[i] : "");
+                set_txt(u->b_val[i], on ? BOOT.val[i] : "");
+                set_tc(u->b_val[i], BOOT.ok[i] ? G_SAGE : G_RUST);
+            }
+            set_hidden(u->b_motto, BOOT.visible <= BOOT.n);
         }
         // like & subscribe, once per pack
         const float t = card_t / 1000.0f, T_OUT = 8.0f;
